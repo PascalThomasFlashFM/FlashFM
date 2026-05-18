@@ -302,38 +302,77 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _build_ui(self):
+        BG       = "#1e1e2e"   # fond général
+        BG2      = "#2a2a3e"   # fond des cadres intérieurs
+        FG       = "#cdd6f4"   # texte principal
+        FG_DIM   = "#aaaacc"   # texte secondaire
+        ACCENT   = "#e8c547"   # jaune FlashCash
+        BTN_BROWSE  = "#4a4a7a"   # bouton Parcourir
+        BTN_RESET   = "#5a3a6a"   # bouton Réinitialiser
+        BTN_IMPORT  = "#2d6a4f"   # bouton principal (vert foncé)
+        BTN_DONE    = "#1a5c38"   # bouton après succès
+
+        self.configure(bg=BG)
+
         # ── En-tête ──────────────────────────────────────────────────────────
-        header = tk.Frame(self, bg="#1a1a2e", pady=14)
+        header = tk.Frame(self, bg="#12122a", pady=14)
         header.pack(fill="x")
         tk.Label(
             header, text="FlashCash  –  Import Joueurs",
-            font=("Helvetica", 17, "bold"), fg="#e8c547", bg="#1a1a2e"
+            font=("Helvetica", 17, "bold"), fg=ACCENT, bg="#12122a"
         ).pack()
         tk.Label(
             header, text="Importation CSV vers Google Sheets",
-            font=("Helvetica", 10), fg="#aaaacc", bg="#1a1a2e"
+            font=("Helvetica", 10), fg=FG_DIM, bg="#12122a"
         ).pack()
 
         # ── Sélection fichier ─────────────────────────────────────────────────
-        file_frame = tk.LabelFrame(self, text=" Fichier CSV ", padx=10, pady=8)
+        file_frame = tk.LabelFrame(
+            self, text=" Fichier CSV ",
+            bg=BG, fg=FG, padx=10, pady=8
+        )
         file_frame.pack(fill="x", padx=16, pady=(14, 4))
 
-        entry = tk.Entry(file_frame, textvariable=self._csv_path, state="readonly",
-                         width=60, font=("Courier", 10))
+        entry = tk.Entry(
+            file_frame, textvariable=self._csv_path, state="readonly",
+            width=60, font=("Courier", 10),
+            bg=BG2, fg=FG, insertbackground=FG,
+            readonlybackground=BG2, relief="flat", bd=4
+        )
         entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
 
         tk.Button(
             file_frame, text="Parcourir…", command=self._browse,
-            bg="#3a3a5c", fg="white", relief="flat", padx=10, pady=4,
-            cursor="hand2"
+            bg=BTN_BROWSE, fg="white", activebackground="#6060a0",
+            activeforeground="white", relief="flat", padx=12, pady=5,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=0
         ).pack(side="left")
 
         # ── Prévisualisation ──────────────────────────────────────────────────
-        preview_frame = tk.LabelFrame(self, text=" Aperçu des données parsées ", padx=10, pady=6)
+        preview_frame = tk.LabelFrame(
+            self, text=" Aperçu des données parsées ",
+            bg=BG, fg=FG, padx=10, pady=6
+        )
         preview_frame.pack(fill="both", expand=True, padx=16, pady=4)
 
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Dark.Treeview",
+            background=BG2, foreground=FG,
+            fieldbackground=BG2, rowheight=22,
+            font=("Helvetica", 9)
+        )
+        style.configure("Dark.Treeview.Heading",
+            background="#3a3a5e", foreground=ACCENT,
+            font=("Helvetica", 9, "bold"), relief="flat"
+        )
+        style.map("Dark.Treeview", background=[("selected", "#3d5a80")])
+
         cols = ("Prénom", "Nom", "Téléphone", "Ville", "Email")
-        self._tree = ttk.Treeview(preview_frame, columns=cols, show="headings", height=8)
+        self._tree = ttk.Treeview(
+            preview_frame, columns=cols, show="headings",
+            height=8, style="Dark.Treeview"
+        )
         widths = [110, 130, 120, 130, 210]
         for col, w in zip(cols, widths):
             self._tree.heading(col, text=col)
@@ -345,32 +384,42 @@ class App(tk.Tk):
         vsb.pack(side="right", fill="y")
 
         # ── Journal ───────────────────────────────────────────────────────────
-        log_frame = tk.LabelFrame(self, text=" Journal ", padx=10, pady=6)
+        log_frame = tk.LabelFrame(
+            self, text=" Journal ",
+            bg=BG, fg=FG, padx=10, pady=6
+        )
         log_frame.pack(fill="x", padx=16, pady=4)
 
         self._log = scrolledtext.ScrolledText(
-            log_frame, height=6, state="disabled",
-            font=("Courier", 9), bg="#0d0d1a", fg="#88ff88"
+            log_frame, height=5, state="disabled",
+            font=("Courier", 9), bg="#0d0d1a", fg="#88ff88",
+            insertbackground="#88ff88", relief="flat", bd=2
         )
         self._log.pack(fill="x")
 
         # ── Boutons d'action ──────────────────────────────────────────────────
-        btn_frame = tk.Frame(self, pady=10)
+        btn_frame = tk.Frame(self, bg=BG, pady=12)
         btn_frame.pack()
 
         self._btn_import = tk.Button(
             btn_frame, text="▶  Écrire dans Google Sheets",
             command=self._import, state="disabled",
             font=("Helvetica", 12, "bold"),
-            bg="#e8c547", fg="#1a1a2e", relief="flat",
-            padx=20, pady=8, cursor="hand2"
+            bg=BTN_IMPORT, fg="white",
+            activebackground="#3d8b62", activeforeground="white",
+            disabledforeground="#aaaaaa",
+            relief="flat", padx=22, pady=10, cursor="hand2", bd=0
         )
         self._btn_import.pack(side="left", padx=8)
+        self._BTN_IMPORT_COLOR = BTN_IMPORT
+        self._BTN_DONE_COLOR   = BTN_DONE
 
         tk.Button(
             btn_frame, text="Réinitialiser", command=self._reset,
-            bg="#555577", fg="white", relief="flat",
-            padx=12, pady=8, cursor="hand2"
+            bg=BTN_RESET, fg="white",
+            activebackground="#7a4a8a", activeforeground="white",
+            relief="flat", padx=14, pady=10,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=0
         ).pack(side="left", padx=8)
 
     # ── Actions ───────────────────────────────────────────────────────────────
@@ -430,13 +479,13 @@ class App(tk.Tk):
                 "Import réussi",
                 f"{count} joueur(s) ajouté(s) dans Google Sheets avec succès."
             )
-            self._btn_import.configure(text="✓  Import terminé", bg="#44aa44", fg="white")
+            self._btn_import.configure(text="✓  Import terminé", bg=self._BTN_DONE_COLOR, fg="white")
         except Exception as exc:
             messagebox.showerror("Erreur d'import", str(exc))
             self._log_msg(f"✗ Erreur : {exc}")
             self._btn_import.configure(
                 state="normal", text="▶  Écrire dans Google Sheets",
-                bg="#e8c547", fg="#1a1a2e"
+                bg=self._BTN_IMPORT_COLOR, fg="white"
             )
 
     def _reset(self):
@@ -448,7 +497,7 @@ class App(tk.Tk):
         self._log.configure(state="disabled")
         self._btn_import.configure(
             state="disabled", text="▶  Écrire dans Google Sheets",
-            bg="#e8c547", fg="#1a1a2e"
+            bg=self._BTN_IMPORT_COLOR, fg="white"
         )
 
 
