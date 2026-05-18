@@ -134,14 +134,38 @@ def get_worksheet():
     raise ValueError(f"Onglet avec gid={SHEET_GID} introuvable.")
 
 
-def find_first_empty_row(ws) -> int:
-    """Retourne le numéro de la première ligne vide en colonne B."""
+def find_first_empty_row(ws, empty_threshold: int = 20) -> int:
+    """
+    Retourne la première ligne disponible après la dernière zone de données
+    en colonne B, définie comme la dernière ligne non vide suivie d'au moins
+    `empty_threshold` lignes vides consécutives.
+    """
     col_b = ws.col_values(2)  # colonne B (index 2)
-    # Chercher la dernière ligne non vide
-    last = len(col_b)
-    while last > 0 and not col_b[last - 1].strip():
-        last -= 1
-    return last + 1  # +1 pour la ligne suivante (1-indexé)
+
+    # Parcourir depuis la fin pour trouver le dernier groupe de données
+    # suivi d'au moins `empty_threshold` lignes vides
+    n = len(col_b)
+    consecutive_empty = 0
+    last_data_row = 0  # 1-indexé
+
+    for i in range(n - 1, -1, -1):
+        if col_b[i].strip():
+            if consecutive_empty >= empty_threshold or last_data_row == 0:
+                last_data_row = i + 1  # convertir en index 1-based
+                break
+            else:
+                consecutive_empty = 0
+        else:
+            consecutive_empty += 1
+
+    # Si on n'a pas encore trouvé (boucle terminée sans break)
+    if last_data_row == 0:
+        for i in range(n - 1, -1, -1):
+            if col_b[i].strip():
+                last_data_row = i + 1
+                break
+
+    return last_data_row + 1  # ligne suivant la dernière donnée
 
 
 def write_to_sheet(records: list, log_callback=None) -> int:
