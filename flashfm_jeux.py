@@ -2,14 +2,15 @@
 # -*- coding: utf-8 -*-
 """
 Flash FM – Gestionnaire de Jeux Concours
-Tirage au sort, export Google Sheets, envoi d'emails personnalisés.
+Tirage au sort avec vérification d'éligibilité, export Google Sheets,
+envoi d'emails personnalisés.
 Nécessite : pip install gspread google-auth
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import json, os, csv, io, re, random, smtplib, threading
-from datetime import datetime
+import json, os, csv, io, re, random, smtplib, threading, unicodedata
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -35,15 +36,14 @@ TEST_EMAIL     = "pascal@flashfm.fr"
 SPREADSHEET_ID = "1pAoPThNMkDNh7zUMTEAJiltKaLAMioNAMCT1-ELqQnU"
 
 # ─── Couleurs ─────────────────────────────────────────────
-C_RED    = "#C0392B"
-C_DARK   = "#2C3E50"
-C_WHITE  = "#FFFFFF"
-C_LIGHT  = "#F0F2F5"
-C_GREEN  = "#27AE60"
-C_BLUE   = "#2980B9"
-C_GRAY   = "#95A5A6"
-C_LGRAY  = "#BDC3C7"
-C_PANEL  = "#FAFAFA"
+C_RED   = "#C0392B"
+C_DARK  = "#2C3E50"
+C_WHITE = "#FFFFFF"
+C_LIGHT = "#F0F2F5"
+C_GREEN = "#27AE60"
+C_BLUE  = "#2980B9"
+C_GRAY  = "#95A5A6"
+C_LGRAY = "#BDC3C7"
 
 # ─── Regex CSV ────────────────────────────────────────────
 EMAIL_RE = re.compile(r'[\w.+-]+@[\w-]+\.[a-z]{2,}', re.IGNORECASE)
@@ -54,11 +54,44 @@ PHONE_RE = re.compile(
 
 
 # ══════════════════════════════════════════════════════════
-#  Logique métier
+#  Utilitaires
+# ══════════════════════════════════════════════════════════
+
+def normalize(s):
+    """Minuscules, sans accents, espaces normalisés."""
+    s = s.lower().strip()
+    return ' '.join(
+        ''.join(c for c in unicodedata.normalize('NFD', w)
+                if unicodedata.category(c) != 'Mn')
+        for w in s.split()
+    )
+
+
+def format_phone(phone):
+    """Formate un numéro 10 chiffres en XX XX XX XX XX."""
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) == 10:
+        return ' '.join(digits[i:i+2] for i in range(0, 10, 2))
+    return phone
+
+
+def parse_date(s):
+    """Tente de parser une date en plusieurs formats ; retourne None si échec."""
+    s = s.strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y", "%d %m %Y"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+# ══════════════════════════════════════════════════════════
+#  Parsing CSV
 # ══════════════════════════════════════════════════════════
 
 def parse_csv(filepath):
-    """Parse un export CSV MGS, retourne la liste de participants uniques."""
+    """Parse un export CSV MGS ; retourne la liste de participants uniques."""
     with open(filepath, encoding="utf-8") as f:
         raw = f.read()
     reader = csv.reader(io.StringIO(raw), delimiter=';', quotechar='"')
@@ -97,94 +130,239 @@ def parse_csv(filepath):
         text = re.sub(r'\s+', ' ', text).strip(' .-')
 
         parts  = text.split()
-        nom    = parts[0].upper()    if len(parts) >= 1 else "?"
+        nom    = parts[0].upper()      if len(parts) >= 1 else "?"
         prenom = parts[1].capitalize() if len(parts) >= 2 else ""
+        ville  = ' '.join(w.capitalize() for w in parts[2:] if len(w) > 1)
 
         key = (phone, email.lower())
         if key not in seen:
             seen[key] = True
             participants.append({
                 'nom': nom, 'prenom': prenom,
+                'ville': ville,
                 'email': email, 'phone': phone,
-                'info': text
             })
     return participants
 
 
-def apply_vars(text, variables):
-    """Remplace {clé} par sa valeur dans un texte."""
-    for k, v in variables.items():
-        text = text.replace(f'{{{k}}}', v)
-    return text
+# ══════════════════════════════════════════════════════════
+#  Vérification d'éligibilité (Google Sheets)
+# ══════════════════════════════════════════════════════════
 
-
-def send_smtp(to_addr, subject, html_body, plain_body):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"]    = f"{FROM_NAME} <{FROM_ADDR}>"
-    msg["To"]      = to_addr
-    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
-    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as srv:
-        srv.login(SMTP_LOGIN, SMTP_PASSWORD)
-        srv.sendmail(FROM_ADDR, to_addr, msg.as_string())
-
-
-def export_to_sheets(creds_path, tab_name, winners, game_info):
+def _sheets_client(creds_path):
     creds = Credentials.from_service_account_file(
         creds_path,
         scopes=["https://spreadsheets.google.com/feeds",
                 "https://www.googleapis.com/auth/drive"]
     )
     gc = gspread.authorize(creds)
-    sh = gc.open_by_key(SPREADSHEET_ID)
+    return gc.open_by_key(SPREADSHEET_ID)
+
+
+def load_eligibility_data(creds_path):
+    """
+    Charge depuis Google Sheets :
+      - la liste des joueurs bannis
+      - l'historique des gagnants avec leurs dates
+    Retourne (banned_rows, winners_data)
+    """
+    sh = _sheets_client(creds_path)
+
+    # ── Joueurs bannis ────────────────────────────────────
+    banned_ws   = sh.worksheet("Joueurs à bannir des jeux")
+    all_banned  = banned_ws.get_all_values()
+    # On garde toutes les lignes (sauf la première si c'est un en-tête)
+    # et on filtre les vides
+    banned_rows = [
+        row for row in all_banned[1:]
+        if any(c.strip() for c in row)
+    ]
+
+    # ── Liste des gagnants ────────────────────────────────
+    winners_ws  = sh.worksheet("liste des gagnants")
+    all_winners = winners_ws.get_all_values()
+
+    if len(all_winners) < 4:
+        return banned_rows, []
+
+    # Les en-têtes sont en ligne 3 (index 2)
+    header_row = all_winners[2]
+
+    # Trouver colonnes Nom et Prénom dans les en-têtes
+    def find_col(hdrs, keywords):
+        for i, h in enumerate(hdrs):
+            if any(kw in normalize(h) for kw in keywords):
+                return i
+        return None
+
+    nom_col    = find_col(header_row, ['nom'])
+    prenom_col = find_col(header_row, ['prenom', 'prénom'])
+    if nom_col    is None: nom_col    = 0
+    if prenom_col is None: prenom_col = 1
+
+    # Colonnes de dates : F et au-delà (index ≥ 5) avec un en-tête non vide
+    date_cols = [i for i in range(5, len(header_row)) if header_row[i].strip()]
+
+    winners_data = []
+    for row in all_winners[3:]:  # données à partir de la ligne 4
+        if not row or not any(c.strip() for c in row):
+            continue
+        n_val = row[nom_col].strip()    if nom_col    < len(row) else ""
+        p_val = row[prenom_col].strip() if prenom_col < len(row) else ""
+        if not n_val:
+            continue
+
+        dates = []
+        for i in date_cols:
+            if i < len(row) and row[i].strip():
+                d = parse_date(row[i])
+                if d:
+                    dates.append(d)
+
+        winners_data.append({'nom': n_val, 'prenom': p_val, 'dates': dates})
+
+    return banned_rows, winners_data
+
+
+def check_eligibility(candidate, banned_rows, winners_data):
+    """
+    Retourne (valide: bool, raison: str).
+    1. Vérifie la liste des bannis.
+    2. Vérifie l'historique des gagnants (dates < 6 mois → refusé).
+    """
+    nom    = normalize(candidate['nom'])
+    prenom = normalize(candidate['prenom'])
+
+    # ── Vérification 1 : liste des bannis ─────────────────
+    for row in banned_rows:
+        row_text = normalize(' '.join(row))
+        if nom in row_text and prenom in row_text:
+            return False, "Banni des jeux"
+
+    # ── Vérification 2 : historique des gains ─────────────
+    six_months_ago = datetime.now() - timedelta(days=183)
+
+    for entry in winners_data:
+        if normalize(entry['nom']) == nom and normalize(entry['prenom']) == prenom:
+            dates = entry.get('dates', [])
+            if not dates:
+                return True, "Déjà gagnant mais aucune date récente"
+            recent = [d for d in dates if d > six_months_ago]
+            if recent:
+                last = max(recent).strftime('%d/%m/%Y')
+                return False, f"A gagné le {last} (moins de 6 mois)"
+            else:
+                last = max(dates).strftime('%d/%m/%Y')
+                return True, f"OK (dernière victoire le {last}, plus de 6 mois)"
+
+    return True, "OK"
+
+
+def draw_with_checks(participants, n, banned_rows, winners_data,
+                     log_cb, done_cb, error_cb):
+    """
+    Tirage au sort aléatoire avec vérification d'éligibilité.
+    Remplace automatiquement les participants refusés.
+    Exécuté dans un thread secondaire.
+    """
+    pool = [p for p in participants if p['email']]
+    random.shuffle(pool)
+
+    winners, excluded = [], 0
+
+    for candidate in pool:
+        if len(winners) >= n:
+            break
+        valid, reason = check_eligibility(candidate, banned_rows, winners_data)
+        if valid:
+            winners.append(candidate)
+            log_cb(f"✓  {candidate['prenom']} {candidate['nom']} — {reason}")
+        else:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']} — {reason} → remplacé")
+
+    if len(winners) < n:
+        error_cb(f"Attention : seulement {len(winners)}/{n} gagnants éligibles trouvés "
+                 f"({excluded} exclus).")
+
+    done_cb(winners)
+
+
+# ══════════════════════════════════════════════════════════
+#  Export Google Sheets
+# ══════════════════════════════════════════════════════════
+
+def export_to_sheets(creds_path, tab_name, winners, game_info):
+    sh = _sheets_client(creds_path)
 
     try:
         sh.del_worksheet(sh.worksheet(tab_name))
     except gspread.exceptions.WorksheetNotFound:
         pass
 
-    ws = sh.add_worksheet(title=tab_name, rows=len(winners) + 5, cols=7)
-    title  = f"{game_info['nom_jeu']}  –  {game_info['date']}  –  {game_info['lieu']}"
-    header = ["Lot", "Nom", "Prénom", "Informations", "Email", "Téléphone"]
-    data   = [[f"Lot {i+1}", w['nom'], w['prenom'], w.get('info',''), w['email'], w['phone']]
-              for i, w in enumerate(winners)]
+    ws = sh.add_worksheet(title=tab_name, rows=len(winners) + 5, cols=6)
 
-    ws.update("A1", [[title,"","","","",""], ["","","","","",""], header] + data)
+    title  = (f"{game_info['nom_jeu']}  –  "
+              f"{game_info['date']}  –  {game_info['lieu']}")
+    header = ["Nom", "Prénom", "Ville", "Email", "Téléphone"]
+    data   = [
+        [w['nom'], w['prenom'], w.get('ville', ''),
+         w['email'], format_phone(w['phone'])]
+        for w in winners
+    ]
+
+    ws.update("A1", [
+        [title, "", "", "", ""],
+        ["",    "", "", "", ""],
+        header
+    ] + data)
 
     sid = ws.id
     sh.batch_update({"requests": [
+        # Fusion titre
         {"mergeCells": {
-            "range": {"sheetId": sid, "startRowIndex":0,"endRowIndex":1,
-                      "startColumnIndex":0,"endColumnIndex":6},
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
             "mergeType": "MERGE_ALL"}},
+        # Style titre
         {"repeatCell": {
-            "range": {"sheetId": sid, "startRowIndex":0,"endRowIndex":1,
-                      "startColumnIndex":0,"endColumnIndex":6},
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red":0.75,"green":0.05,"blue":0.05},
+                "backgroundColor": {"red": 0.75, "green": 0.05, "blue": 0.05},
                 "horizontalAlignment": "CENTER",
-                "textFormat": {"bold":True,"fontSize":13,
-                               "foregroundColor":{"red":1,"green":1,"blue":1}}}},
+                "textFormat": {"bold": True, "fontSize": 13,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
             "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+        # Style en-têtes
         {"repeatCell": {
-            "range": {"sheetId": sid,"startRowIndex":2,"endRowIndex":3,
-                      "startColumnIndex":0,"endColumnIndex":6},
+            "range": {"sheetId": sid, "startRowIndex": 2, "endRowIndex": 3,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red":0.13,"green":0.24,"blue":0.49},
-                "textFormat": {"bold":True,"foregroundColor":{"red":1,"green":1,"blue":1}}}},
+                "backgroundColor": {"red": 0.13, "green": 0.24, "blue": 0.49},
+                "textFormat": {"bold": True,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
             "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
+        # Hauteur ligne titre
         {"updateDimensionProperties": {
-            "range": {"sheetId":sid,"dimension":"ROWS","startIndex":0,"endIndex":1},
-            "properties": {"pixelSize":42},"fields":"pixelSize"}},
+            "range": {"sheetId": sid, "dimension": "ROWS",
+                      "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 42}, "fields": "pixelSize"}},
+        # Largeur colonnes
         {"updateDimensionProperties": {
-            "range": {"sheetId":sid,"dimension":"COLUMNS","startIndex":0,"endIndex":6},
-            "properties": {"pixelSize":160},"fields":"pixelSize"}},
+            "range": {"sheetId": sid, "dimension": "COLUMNS",
+                      "startIndex": 0, "endIndex": 5},
+            "properties": {"pixelSize": 160}, "fields": "pixelSize"}},
     ]})
-    return f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit#gid={sid}"
+
+    return (f"https://docs.google.com/spreadsheets/d/"
+            f"{SPREADSHEET_ID}/edit#gid={sid}")
 
 
-# ─── Templates par défaut ─────────────────────────────────
+# ══════════════════════════════════════════════════════════
+#  Templates email
+# ══════════════════════════════════════════════════════════
+
 DEFAULT_TEMPLATE = {
     "name": "Concert / Spectacle (Zénith)",
     "subject": "Flash FM : {nom_jeu}",
@@ -218,41 +396,54 @@ DEFAULT_TEMPLATE = {
     "html": (
         "<html><body style='font-family:Calibri,sans-serif;font-size:12pt;'>"
         "<p>Bonjour <strong>{prenom}</strong>,</p>"
-        "<p>Suite à votre participation à notre jeu Flash FM «&nbsp;<strong>{nom_jeu}</strong>&nbsp;», "
-        "j'ai le plaisir de vous annoncer que vous avez été tiré au sort pour remporter 2 invitations&nbsp;!</p>"
-        "<p><strong>Date&nbsp;: {date}</strong><br><strong>Lieu&nbsp;: {lieu}</strong></p>"
+        "<p>Suite à votre participation à notre jeu Flash FM «&nbsp;"
+        "<strong>{nom_jeu}</strong>&nbsp;», j'ai le plaisir de vous annoncer que vous "
+        "avez été tiré au sort pour remporter 2 invitations&nbsp;!</p>"
+        "<p><strong>Date&nbsp;: {date}</strong><br>"
+        "<strong>Lieu&nbsp;: {lieu}</strong></p>"
         "<p><strong>Vous êtes inscrit sur une liste d'invités Flash FM.</strong> "
-        "Vos places sont à retirer <strong>le soir du concert au guichet Invité sur la gauche du Zénith</strong> "
-        "– Vous devrez vous munir d'une pièce d'identité.</p>"
+        "Vos places sont à retirer <strong>le soir du concert au guichet Invité sur "
+        "la gauche du Zénith</strong> – Vous devrez vous munir d'une pièce "
+        "d'identité.</p>"
         "<p>Il n'est pas nécessaire de prendre la file d'attente du guichet principal, "
-        "le guichet «&nbsp;invités&nbsp;» est sur la gauche à l'extérieur du Zénith.</p>"
+        "le guichet «&nbsp;invités&nbsp;» est sur la gauche à l'extérieur du "
+        "Zénith.</p>"
         "<br><p style='text-align:center;font-size:14pt;color:red;'>"
-        "<strong>Merci de me confirmer en retour la bonne réception de ce mail.</strong></p><br>"
-        "<p>Vous retrouvez chaque semaine nos nouveaux jeux en écoutant Flash FM, sur notre site "
-        "<a href='http://flashfm.fr'>flashfm.fr</a>, et sur notre application Flash FM France "
-        "(gratuite sur tous les stores).</p>"
+        "<strong>Merci de me confirmer en retour la bonne réception de ce "
+        "mail.</strong></p><br>"
+        "<p>Vous retrouvez chaque semaine nos nouveaux jeux en écoutant Flash FM, "
+        "sur notre site <a href='http://flashfm.fr'>flashfm.fr</a>, et sur notre "
+        "application Flash FM France (gratuite sur tous les stores).</p>"
         "<p>Merci de votre fidélité et bon spectacle&nbsp;!</p><br>"
-        "<p style='color:#7030A0;'><em><u>PS</u>&nbsp;: Si un jour vous êtes sollicité par téléphone "
-        "par l'institut de Sondage Médiamétrie concernant les audiences radio, n'oubliez pas de répondre "
-        "que vous écoutez Flash FM&nbsp;&#128521;</em></p>"
-        "<p style='color:#C00000;'><strong><em>Vous souhaitez nous remercier pour ces places ou vous "
-        "appréciez tout simplement Flash FM&nbsp;?</em></strong> "
-        "<em><a href='https://g.page/r/CbZFpSFwfcq7EBM/review' style='color:#C00000;'>"
-        "Laissez-nous un avis sur notre fiche Google ici&nbsp;!</a></em></p><br>"
-        "<p><strong><em><span style='font-size:14pt;color:#1F497D;'>Pascal Thomas</span></em></strong><br>"
-        "<strong><em><span style='font-size:14pt;color:#1F497D;'>FLASH FM</span></em></strong><br>"
-        "<em><span style='font-size:8pt;color:#7030A0;'>Gérant SARL PROXIMEDIA</span></em><br>"
+        "<p style='color:#7030A0;'><em><u>PS</u>&nbsp;: Si un jour vous êtes sollicité "
+        "par téléphone par l'institut de Sondage Médiamétrie concernant les audiences "
+        "radio, n'oubliez pas de répondre que vous écoutez Flash FM&nbsp;"
+        "&#128521;</em></p>"
+        "<p style='color:#C00000;'><strong><em>Vous souhaitez nous remercier pour ces "
+        "places ou vous appréciez tout simplement Flash FM&nbsp;?</em></strong> "
+        "<em><a href='https://g.page/r/CbZFpSFwfcq7EBM/review' "
+        "style='color:#C00000;'>Laissez-nous un avis sur notre fiche Google "
+        "ici&nbsp;!</a></em></p><br>"
+        "<p><strong><em><span style='font-size:14pt;color:#1F497D;'>Pascal "
+        "Thomas</span></em></strong><br>"
+        "<strong><em><span style='font-size:14pt;color:#1F497D;'>FLASH "
+        "FM</span></em></strong><br>"
+        "<em><span style='font-size:8pt;color:#7030A0;'>Gérant SARL "
+        "PROXIMEDIA</span></em><br>"
         "<em><span style='color:#17365D;'>Directeur</span></em><br>"
         "<span style='color:#1F497D;'>30-32 Cours Gay Lussac</span><br>"
         "<span style='color:#1F497D;'>87000 LIMOGES</span><br>"
         "<span style='color:#4A442A;'>05 55 31 00 00</span></p>"
-        "<p><a href='mailto:pascal@flashfm.fr' style='color:purple;'>pascal@flashfm.fr</a>&nbsp;|&nbsp;"
-        "<a href='http://www.flashfm.fr' style='color:purple;'>http://www.flashfm.fr</a></p><br>"
-        "<p><em><span style='color:#1F497D;'>FLASH FM 1<sup>ère</sup> radio musicale à LIMOGES "
-        "et en HAUTE-VIENNE</span></em><br>"
-        "Limoges&nbsp;: 89.9 – Saint-Junien&nbsp;: 98.4 – Brive&nbsp;: 99.9 – Uzerche&nbsp;: 99.9 "
-        "– Guéret&nbsp;: 97.7 – Montmorillon&nbsp;: 95<br>"
-        "DAB +&nbsp;: Haute-Vienne – Corrèze – Vienne – Et sur notre application Flash FM France</p>"
+        "<p><a href='mailto:pascal@flashfm.fr' style='color:purple;'>"
+        "pascal@flashfm.fr</a>&nbsp;|&nbsp;"
+        "<a href='http://www.flashfm.fr' style='color:purple;'>"
+        "http://www.flashfm.fr</a></p><br>"
+        "<p><em><span style='color:#1F497D;'>FLASH FM 1<sup>ère</sup> radio musicale "
+        "à LIMOGES et en HAUTE-VIENNE</span></em><br>"
+        "Limoges&nbsp;: 89.9 – Saint-Junien&nbsp;: 98.4 – Brive&nbsp;: 99.9 – "
+        "Uzerche&nbsp;: 99.9 – Guéret&nbsp;: 97.7 – Montmorillon&nbsp;: 95<br>"
+        "DAB +&nbsp;: Haute-Vienne – Corrèze – Vienne – Et sur notre application "
+        "Flash FM France</p>"
         "</body></html>"
     )
 }
@@ -270,6 +461,28 @@ def save_templates(tpls):
         json.dump(tpls, f, ensure_ascii=False, indent=2)
 
 
+def apply_vars(text, variables):
+    for k, v in variables.items():
+        text = text.replace(f'{{{k}}}', v)
+    return text
+
+
+# ══════════════════════════════════════════════════════════
+#  Envoi email
+# ══════════════════════════════════════════════════════════
+
+def send_smtp(to_addr, subject, html_body, plain_body):
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"]    = f"{FROM_NAME} <{FROM_ADDR}>"
+    msg["To"]      = to_addr
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as srv:
+        srv.login(SMTP_LOGIN, SMTP_PASSWORD)
+        srv.sendmail(FROM_ADDR, to_addr, msg.as_string())
+
+
 # ══════════════════════════════════════════════════════════
 #  Dialogue Éditeur de modèle
 # ══════════════════════════════════════════════════════════
@@ -284,28 +497,27 @@ class TemplateEditor(tk.Toplevel):
         self.on_save = on_save
         self.grab_set()
 
-        pad = {"padx": 16, "pady": 8}
         frm = tk.Frame(self, bg=C_LIGHT)
-        frm.pack(fill=tk.BOTH, expand=True, **pad)
+        frm.pack(fill=tk.BOTH, expand=True, padx=16, pady=8)
 
-        # Nom
-        tk.Label(frm, text="Nom du modèle :", bg=C_LIGHT, font=("", 10, "bold")).grid(
-            row=0, column=0, sticky="w", pady=(0,4))
+        tk.Label(frm, text="Nom du modèle :", bg=C_LIGHT,
+                 font=("", 10, "bold")).grid(row=0, column=0, sticky="w", pady=4)
         self.v_name = tk.StringVar(value=template['name'] if template else "")
-        ttk.Entry(frm, textvariable=self.v_name, width=65).grid(row=0, column=1, sticky="ew", padx=8)
+        ttk.Entry(frm, textvariable=self.v_name, width=65).grid(
+            row=0, column=1, sticky="ew", padx=8)
 
-        # Sujet
-        tk.Label(frm, text="Sujet :", bg=C_LIGHT, font=("", 10, "bold")).grid(
-            row=1, column=0, sticky="w", pady=(0,4))
-        self.v_subject = tk.StringVar(value=template['subject'] if template else "Flash FM : {nom_jeu}")
-        ttk.Entry(frm, textvariable=self.v_subject, width=65).grid(row=1, column=1, sticky="ew", padx=8)
+        tk.Label(frm, text="Sujet :", bg=C_LIGHT,
+                 font=("", 10, "bold")).grid(row=1, column=0, sticky="w", pady=4)
+        self.v_subject = tk.StringVar(
+            value=template['subject'] if template else "Flash FM : {nom_jeu}")
+        ttk.Entry(frm, textvariable=self.v_subject, width=65).grid(
+            row=1, column=1, sticky="ew", padx=8)
 
-        # Aide variables
-        hint = "Variables disponibles : {prenom}  {nom}  {nom_jeu}  {date}  {lieu}"
-        tk.Label(frm, text=hint, bg=C_LIGHT, fg=C_GRAY, font=("", 9)).grid(
+        tk.Label(frm,
+                 text="Variables disponibles : {prenom}  {nom}  {nom_jeu}  {date}  {lieu}",
+                 bg=C_LIGHT, fg=C_GRAY, font=("", 9)).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(2, 8))
 
-        # Notebook HTML / Texte
         nb = ttk.Notebook(frm)
         nb.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=4)
         frm.rowconfigure(3, weight=1)
@@ -313,23 +525,25 @@ class TemplateEditor(tk.Toplevel):
 
         html_f = ttk.Frame(nb)
         nb.add(html_f, text="  Corps HTML  ")
-        self.w_html = scrolledtext.ScrolledText(html_f, wrap=tk.WORD, font=("Courier", 10))
+        self.w_html = scrolledtext.ScrolledText(
+            html_f, wrap=tk.WORD, font=("Courier", 10))
         self.w_html.pack(fill=tk.BOTH, expand=True)
         if template:
             self.w_html.insert("1.0", template.get('html', ''))
 
         plain_f = ttk.Frame(nb)
         nb.add(plain_f, text="  Corps Texte brut  ")
-        self.w_plain = scrolledtext.ScrolledText(plain_f, wrap=tk.WORD, font=("Courier", 10))
+        self.w_plain = scrolledtext.ScrolledText(
+            plain_f, wrap=tk.WORD, font=("Courier", 10))
         self.w_plain.pack(fill=tk.BOTH, expand=True)
         if template:
             self.w_plain.insert("1.0", template.get('plain', ''))
 
-        # Boutons
         bf = tk.Frame(frm, bg=C_LIGHT)
         bf.grid(row=4, column=0, columnspan=2, pady=14)
         tk.Button(bf, text="Annuler", command=self.destroy,
-                  bg=C_LGRAY, fg=C_DARK, padx=16, pady=6, relief=tk.FLAT).pack(side=tk.RIGHT, padx=6)
+                  bg=C_LGRAY, fg=C_DARK, padx=16, pady=6,
+                  relief=tk.FLAT).pack(side=tk.RIGHT, padx=6)
         tk.Button(bf, text="✓  Enregistrer", command=self._save,
                   bg=C_GREEN, fg=C_WHITE, font=("", 10, "bold"),
                   padx=16, pady=6, relief=tk.FLAT).pack(side=tk.RIGHT)
@@ -337,12 +551,13 @@ class TemplateEditor(tk.Toplevel):
     def _save(self):
         name = self.v_name.get().strip()
         if not name:
-            messagebox.showwarning("Champ manquant", "Saisissez un nom pour le modèle.", parent=self)
+            messagebox.showwarning("Champ manquant",
+                "Saisissez un nom pour le modèle.", parent=self)
             return
         result = {
             "name":    name,
             "subject": self.v_subject.get().strip(),
-            "html":    self.w_html.get("1.0", tk.END).strip(),
+            "html":    self.w_html.get("1.0",  tk.END).strip(),
             "plain":   self.w_plain.get("1.0", tk.END).strip(),
         }
         if self.on_save:
@@ -358,28 +573,28 @@ class FlashFMApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Flash FM – Gestionnaire de Jeux Concours")
-        self.geometry("780x1000")
+        self.geometry("800x1020")
         self.minsize(700, 800)
         self.configure(bg=C_LIGHT)
 
-        self.templates     = load_templates()
-        self.participants  = []
-        self.winners       = []
-        self.creds_path    = tk.StringVar()
+        self.templates    = load_templates()
+        self.participants = []
+        self.winners      = []
+        self.creds_path   = tk.StringVar()
 
         self._build_header()
         self._build_scroll_area()
 
-    # ── Header ───────────────────────────────────────────
+    # ── En-tête ───────────────────────────────────────────
     def _build_header(self):
         h = tk.Frame(self, bg=C_DARK)
         h.pack(fill=tk.X)
         tk.Label(h, text="FLASH FM", bg=C_DARK, fg=C_RED,
                  font=("", 22, "bold"), pady=12).pack(side=tk.LEFT, padx=20)
-        tk.Label(h, text="Gestionnaire de Jeux Concours", bg=C_DARK, fg=C_WHITE,
-                 font=("", 12)).pack(side=tk.LEFT, padx=4)
+        tk.Label(h, text="Gestionnaire de Jeux Concours",
+                 bg=C_DARK, fg=C_WHITE, font=("", 12)).pack(side=tk.LEFT, padx=4)
 
-    # ── Zone défilante ───────────────────────────────────
+    # ── Zone défilante ────────────────────────────────────
     def _build_scroll_area(self):
         container = tk.Frame(self, bg=C_LIGHT)
         container.pack(fill=tk.BOTH, expand=True)
@@ -387,38 +602,35 @@ class FlashFMApp(tk.Tk):
         self._canvas = tk.Canvas(container, bg=C_LIGHT, highlightthickness=0)
         sb = ttk.Scrollbar(container, orient="vertical", command=self._canvas.yview)
         self._canvas.configure(yscrollcommand=sb.set)
-
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        self._inner = tk.Frame(self._canvas, bg=C_LIGHT)
-        self._win_id = self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._inner  = tk.Frame(self._canvas, bg=C_LIGHT)
+        self._win_id = self._canvas.create_window(
+            (0, 0), window=self._inner, anchor="nw")
 
-        self._inner.bind("<Configure>", self._on_inner_configure)
-        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        self._inner.bind("<Configure>", self._on_inner_cfg)
+        self._canvas.bind("<Configure>", self._on_canvas_cfg)
         self._canvas.bind_all("<MouseWheel>",
-            lambda e: self._canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+            lambda e: self._canvas.yview_scroll(-1*(e.delta//120), "units"))
 
         self._build_steps()
-        tk.Frame(self._inner, bg=C_LIGHT, height=24).pack()  # padding bas
+        tk.Frame(self._inner, bg=C_LIGHT, height=24).pack()
 
-    def _on_inner_configure(self, _):
+    def _on_inner_cfg(self, _):
         self._canvas.configure(scrollregion=self._canvas.bbox("all"))
 
-    def _on_canvas_configure(self, event):
+    def _on_canvas_cfg(self, event):
         self._canvas.itemconfig(self._win_id, width=event.width)
 
-    # ── Widget helpers ───────────────────────────────────
+    # ── Helpers UI ────────────────────────────────────────
     def _section(self, title, number, color=C_RED):
-        """Crée une section avec en-tête coloré et retourne le cadre intérieur."""
         outer = tk.Frame(self._inner, bg=C_LIGHT)
         outer.pack(fill=tk.X, padx=18, pady=(12, 2))
-
         hdr = tk.Frame(outer, bg=color)
         hdr.pack(fill=tk.X)
         tk.Label(hdr, text=f"   {number}   {title}", bg=color, fg=C_WHITE,
                  font=("", 11, "bold"), anchor="w", pady=7).pack(fill=tk.X)
-
         body = tk.Frame(outer, bg=C_WHITE, bd=1, relief=tk.GROOVE)
         body.pack(fill=tk.X)
         inner = tk.Frame(body, bg=C_WHITE, padx=16, pady=12)
@@ -432,14 +644,7 @@ class FlashFMApp(tk.Tk):
                          padx=14, pady=7, relief=tk.FLAT, cursor="hand2",
                          activebackground=color, activeforeground=fg)
 
-    def _row(self, parent, cols=2):
-        f = tk.Frame(parent, bg=C_WHITE)
-        f.pack(fill=tk.X, pady=2)
-        for i in range(cols):
-            f.columnconfigure(i, weight=1 if i == 1 else 0)
-        return f
-
-    # ── Étapes ───────────────────────────────────────────
+    # ── Construction des étapes ───────────────────────────
     def _build_steps(self):
         self._build_step1()
         self._build_step2()
@@ -453,23 +658,23 @@ class FlashFMApp(tk.Tk):
     def _build_step1(self):
         f = self._section("Paramètres du jeu", "①")
         self.gv = {}
-        fields = [
-            ("Nom du jeu :",       "nom_jeu", "Les Années 80, La Tournée"),
-            ("Date et heure :",    "date",    "samedi 6 juin 2026 à 20h00"),
-            ("Lieu :",             "lieu",    "Zénith Limoges Métropole"),
-        ]
-        for i, (lbl, key, ph) in enumerate(fields):
+        for i, (lbl, key, ph) in enumerate([
+            ("Nom du jeu :",    "nom_jeu", "Les Années 80, La Tournée"),
+            ("Date et heure :", "date",    "samedi 6 juin 2026 à 20h00"),
+            ("Lieu :",          "lieu",    "Zénith Limoges Métropole"),
+        ]):
             tk.Label(f, text=lbl, bg=C_WHITE, width=18, anchor="w",
                      font=("", 10)).grid(row=i, column=0, sticky="w", pady=4)
             var = tk.StringVar(value=ph)
             self.gv[key] = var
-            ttk.Entry(f, textvariable=var, width=50).grid(row=i, column=1, sticky="ew", padx=8)
+            ttk.Entry(f, textvariable=var, width=52).grid(
+                row=i, column=1, sticky="ew", padx=8)
 
-        tk.Label(f, text="Nombre de gagnants :", bg=C_WHITE, width=18, anchor="w",
-                 font=("", 10)).grid(row=3, column=0, sticky="w", pady=4)
+        tk.Label(f, text="Nombre de gagnants :", bg=C_WHITE, width=18,
+                 anchor="w", font=("", 10)).grid(row=3, column=0, sticky="w", pady=4)
         self.nb_winners = tk.IntVar(value=5)
-        ttk.Spinbox(f, from_=1, to=100, textvariable=self.nb_winners, width=6,
-                    font=("", 11)).grid(row=3, column=1, sticky="w", padx=8)
+        ttk.Spinbox(f, from_=1, to=100, textvariable=self.nb_winners,
+                    width=6, font=("", 11)).grid(row=3, column=1, sticky="w", padx=8)
         f.columnconfigure(1, weight=1)
 
     # ② Fichier CSV
@@ -477,40 +682,68 @@ class FlashFMApp(tk.Tk):
         f = self._section("Fichier CSV des participants", "②")
         row = tk.Frame(f, bg=C_WHITE)
         row.pack(fill=tk.X)
-        self._btn(row, "📂  Parcourir…", self._pick_csv, color=C_DARK, font_size=10).pack(side=tk.LEFT)
+        self._btn(row, "📂  Parcourir…", self._pick_csv,
+                  color=C_DARK).pack(side=tk.LEFT)
         self.lbl_csv = tk.Label(row, text="Aucun fichier sélectionné",
                                 bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
         self.lbl_csv.pack(side=tk.LEFT, padx=12)
-        self.lbl_csv_info = tk.Label(f, text="", bg=C_WHITE, fg=C_GREEN, font=("", 10))
+        self.lbl_csv_info = tk.Label(f, text="", bg=C_WHITE,
+                                     fg=C_GREEN, font=("", 10))
         self.lbl_csv_info.pack(anchor="w", pady=(4, 0))
 
     def _pick_csv(self):
         path = filedialog.askopenfilename(
             title="Sélectionner le fichier CSV",
-            filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")]
-        )
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")])
         if not path:
             return
         try:
             self.participants = parse_csv(path)
-            self.lbl_csv.config(text=os.path.basename(path), fg=C_DARK, font=("", 10))
+            self.lbl_csv.config(text=os.path.basename(path),
+                                fg=C_DARK, font=("", 10))
             self.lbl_csv_info.config(
                 text=f"✓  {len(self.participants)} participants uniques chargés")
-            self._log(f"CSV chargé : {len(self.participants)} participants ({os.path.basename(path)})")
+            self._log(f"CSV : {len(self.participants)} participants "
+                      f"({os.path.basename(path)})")
         except Exception as e:
             messagebox.showerror("Erreur CSV", str(e))
 
-    # ③ Tirage au sort
+    # ③ Tirage au sort avec vérification d'éligibilité
     def _build_step3(self):
         f = self._section("Tirage au sort", "③")
-        self._btn(f, "🎲   LANCER LE TIRAGE", self._do_draw,
-                  color=C_RED, font_size=13).pack(anchor="w", pady=(0, 12))
 
-        cols = ("lot","nom","prenom","email","telephone")
-        self.tree = ttk.Treeview(f, columns=cols, show="headings", height=7,
-                                  selectmode="browse")
-        hdrs = {"lot":"Lot","nom":"Nom","prenom":"Prénom","email":"Email","telephone":"Téléphone"}
-        wids = {"lot":52, "nom":120, "prenom":110, "email":210, "telephone":115}
+        # Credentials (partagé avec étape ④)
+        creds_row = tk.Frame(f, bg=C_WHITE)
+        creds_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(creds_row, text="Credentials Google :",
+                 bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
+        self._btn(creds_row, "📄  JSON…", self._pick_creds,
+                  color="#555", font_size=9).pack(side=tk.LEFT, padx=8)
+        self.lbl_creds = tk.Label(creds_row, text="Aucun fichier",
+                                   bg=C_WHITE, fg=C_GRAY,
+                                   font=("", 10, "italic"))
+        self.lbl_creds.pack(side=tk.LEFT)
+
+        # Info vérification
+        tk.Label(f,
+                 text="ℹ  Le tirage vérifie automatiquement les joueurs bannis "
+                      "et les gains récents (< 6 mois) via Google Sheets.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+
+        # Bouton tirage
+        self.btn_draw = self._btn(f, "🎲   LANCER LE TIRAGE",
+                                   self._do_draw, color=C_RED, font_size=13)
+        self.btn_draw.pack(anchor="w", pady=(0, 12))
+
+        # Tableau résultats
+        cols = ("nom", "prenom", "ville", "email", "telephone")
+        self.tree = ttk.Treeview(f, columns=cols, show="headings",
+                                  height=7, selectmode="browse")
+        hdrs = {"nom": "Nom", "prenom": "Prénom", "ville": "Ville",
+                "email": "Email", "telephone": "Téléphone"}
+        wids = {"nom": 120, "prenom": 110, "ville": 130,
+                "email": 200, "telephone": 120}
         for c in cols:
             self.tree.heading(c, text=hdrs[c])
             self.tree.column(c, width=wids[c], minwidth=50, anchor="w")
@@ -520,65 +753,136 @@ class FlashFMApp(tk.Tk):
         self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
         sb.pack(side=tk.LEFT, fill=tk.Y)
 
+        self.lbl_draw = tk.Label(f, text="", bg=C_WHITE,
+                                  fg=C_GREEN, font=("", 10))
+        self.lbl_draw.pack(anchor="w", pady=(8, 0))
+
+    def _pick_creds(self):
+        path = filedialog.askopenfilename(
+            title="Fichier credentials Google (.json)",
+            filetypes=[("JSON", "*.json"), ("Tous", "*.*")])
+        if path:
+            self.creds_path.set(path)
+            self.lbl_creds.config(text=os.path.basename(path),
+                                   fg=C_DARK, font=("", 10))
+            # Mise à jour du label dans l'étape ④ aussi
+            if hasattr(self, 'lbl_creds4'):
+                self.lbl_creds4.config(text=os.path.basename(path), fg=C_DARK)
+
     def _do_draw(self):
         if not self.participants:
             messagebox.showwarning("CSV manquant",
                 "Chargez d'abord un fichier CSV (étape ②).")
             return
         n = self.nb_winners.get()
-        valid = [p for p in self.participants if p['email']]
-        if n > len(valid):
-            messagebox.showwarning("Pas assez de participants",
-                f"{len(valid)} participants avec email disponibles pour {n} lots.")
-            return
-        self.winners = random.sample(valid, n)
-        self.tree.delete(*self.tree.get_children())
-        for i, w in enumerate(self.winners, 1):
-            self.tree.insert("", tk.END,
-                values=(f"Lot {i}", w['nom'], w['prenom'], w['email'], w['phone']))
-        self._log(f"Tirage effectué : {n} gagnants sélectionnés parmi {len(valid)} participants.")
 
-    # ④ Google Sheets
-    def _build_step4(self):
-        f = self._section("Export Google Sheets", "④", color="#1A6B35")
-
-        row = tk.Frame(f, bg=C_WHITE)
-        row.pack(fill=tk.X)
-        self._btn(row, "📄  Credentials JSON…", self._pick_creds,
-                  color="#555", font_size=10).pack(side=tk.LEFT)
-        self.lbl_creds = tk.Label(row, text="Aucun fichier", bg=C_WHITE,
-                                   fg=C_GRAY, font=("", 10, "italic"))
-        self.lbl_creds.pack(side=tk.LEFT, padx=12)
-
-        self._btn(f, "📊   EXPORTER VERS GOOGLE SHEETS", self._do_sheets,
-                  color="#1A6B35", font_size=11).pack(anchor="w", pady=(10, 4))
-        self.lbl_sheets = tk.Label(f, text="", bg=C_WHITE, fg=C_GREEN, font=("", 10))
-        self.lbl_sheets.pack(anchor="w")
-
-    def _pick_creds(self):
-        path = filedialog.askopenfilename(
-            title="Fichier credentials Google (.json)",
-            filetypes=[("JSON", "*.json"), ("Tous les fichiers", "*.*")]
-        )
-        if path:
-            self.creds_path.set(path)
-            self.lbl_creds.config(text=os.path.basename(path), fg=C_DARK, font=("", 10))
-
-    def _do_sheets(self):
-        if not self.winners:
-            messagebox.showwarning("Tirage manquant", "Effectuez d'abord le tirage (étape ③).")
-            return
         if not self.creds_path.get():
-            messagebox.showwarning("Credentials manquants",
-                "Sélectionnez le fichier credentials Google.")
+            if not messagebox.askyesno("Credentials manquants",
+                "Aucun fichier credentials Google sélectionné.\n\n"
+                "La vérification des éligibilités ne sera PAS effectuée.\n\n"
+                "Continuer quand même sans vérification ?"):
+                return
+            # Tirage simple sans vérification
+            pool = [p for p in self.participants if p['email']]
+            if n > len(pool):
+                messagebox.showwarning("Pas assez de participants",
+                    f"Seulement {len(pool)} participants avec email.")
+                return
+            self.winners = random.sample(pool, n)
+            self._update_winners_tree(self.winners)
+            self._log(f"Tirage simple (sans vérification) : {n} gagnants.")
             return
+
         if not GSPREAD_OK:
             messagebox.showerror("Module manquant",
                 "Installez gspread :\npip install gspread google-auth")
             return
 
-        nom_jeu  = self.gv['nom_jeu'].get()
-        tab_name = f"Gagnants - {nom_jeu[:40]}"
+        # Tirage avec vérification (threaded)
+        self.btn_draw.config(state=tk.DISABLED, text="⏳  Tirage en cours…")
+        self.lbl_draw.config(text="Chargement des données d'éligibilité…",
+                             fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                banned_rows, winners_data = load_eligibility_data(
+                    self.creds_path.get())
+                self.after(0, lambda: self._log(
+                    f"Données chargées : {len(banned_rows)} bannis, "
+                    f"{len(winners_data)} entrées historique."))
+
+                draw_with_checks(
+                    self.participants, n,
+                    banned_rows, winners_data,
+                    log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                    done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
+                    error_cb = lambda m: self.after(0, lambda msg=m:
+                                   messagebox.showwarning("Tirage incomplet", msg))
+                )
+            except Exception as e:
+                self.after(0, lambda: self.lbl_draw.config(
+                    text=f"✗  Erreur : {e}", fg=C_RED))
+                self.after(0, lambda: self._log(f"Erreur tirage : {e}"))
+                self.after(0, lambda: self.btn_draw.config(
+                    state=tk.NORMAL, text="🎲   LANCER LE TIRAGE"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _draw_done(self, winners):
+        self.winners = winners
+        self._update_winners_tree(winners)
+        self.btn_draw.config(state=tk.NORMAL, text="🎲   LANCER LE TIRAGE")
+        self.lbl_draw.config(
+            text=f"✓  {len(winners)} gagnant(s) validé(s)", fg=C_GREEN)
+        self._log(f"Tirage terminé : {len(winners)} gagnant(s) validé(s).")
+
+    def _update_winners_tree(self, winners):
+        self.tree.delete(*self.tree.get_children())
+        for w in winners:
+            self.tree.insert("", tk.END, values=(
+                w['nom'], w['prenom'], w.get('ville', ''),
+                w['email'], format_phone(w['phone'])
+            ))
+
+    # ④ Export Google Sheets
+    def _build_step4(self):
+        f = self._section("Export Google Sheets", "④", color="#1A6B35")
+
+        # Affichage du fichier credentials (sélectionné en étape ③)
+        row = tk.Frame(f, bg=C_WHITE)
+        row.pack(fill=tk.X)
+        tk.Label(row, text="Credentials :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        self.lbl_creds4 = tk.Label(row,
+            text="(sélectionner en étape ③)",
+            bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        self.lbl_creds4.pack(side=tk.LEFT, padx=8)
+
+        self._btn(f, "📊   EXPORTER VERS GOOGLE SHEETS",
+                  self._do_sheets, color="#1A6B35",
+                  font_size=11).pack(anchor="w", pady=(10, 4))
+
+        self.lbl_sheets = tk.Label(f, text="", bg=C_WHITE,
+                                    fg=C_GREEN, font=("", 10))
+        self.lbl_sheets.pack(anchor="w")
+
+    def _do_sheets(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage manquant",
+                "Effectuez d'abord le tirage (étape ③).")
+            return
+        if not self.creds_path.get():
+            messagebox.showwarning("Credentials manquants",
+                "Sélectionnez le fichier credentials Google (étape ③).")
+            return
+        if not GSPREAD_OK:
+            messagebox.showerror("Module manquant",
+                "pip install gspread google-auth")
+            return
+
+        nom_jeu   = self.gv['nom_jeu'].get()
+        tab_name  = f"Gagnants - {nom_jeu[:40]}"
         game_info = {k: v.get() for k, v in self.gv.items()}
 
         self.lbl_sheets.config(text="⏳  Export en cours…", fg=C_GRAY)
@@ -591,33 +895,31 @@ class FlashFMApp(tk.Tk):
                 self.after(0, lambda: self.lbl_sheets.config(
                     text=f"✓  Onglet « {tab_name} » créé", fg=C_GREEN))
                 self.after(0, lambda: self._log(
-                    f"Google Sheets : onglet « {tab_name} » créé → {url}"))
+                    f"Google Sheets : onglet « {tab_name} » → {url}"))
             except Exception as e:
                 self.after(0, lambda: self.lbl_sheets.config(
                     text=f"✗  Erreur : {e}", fg=C_RED))
-                self.after(0, lambda: self._log(f"Erreur Google Sheets : {e}"))
+                self.after(0, lambda: self._log(f"Erreur Sheets : {e}"))
 
         threading.Thread(target=run, daemon=True).start()
 
     # ⑤ Modèle d'email
     def _build_step5(self):
         f = self._section("Modèle d'email", "⑤", color=C_BLUE)
-
         row = tk.Frame(f, bg=C_WHITE)
         row.pack(fill=tk.X)
-        tk.Label(row, text="Modèle :", bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
-
+        tk.Label(row, text="Modèle :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
         self.tpl_var   = tk.StringVar()
         self.tpl_combo = ttk.Combobox(row, textvariable=self.tpl_var,
                                        state="readonly", width=36, font=("", 10))
         self.tpl_combo.pack(side=tk.LEFT, padx=8)
         self._refresh_templates()
-
-        self._btn(row, "＋ Nouveau",    self._tpl_new,
+        self._btn(row, "＋ Nouveau",   self._tpl_new,
                   color="#444", font_size=9).pack(side=tk.LEFT, padx=2)
-        self._btn(row, "✏  Modifier",   self._tpl_edit,
+        self._btn(row, "✏  Modifier",  self._tpl_edit,
                   color="#444", font_size=9).pack(side=tk.LEFT, padx=2)
-        self._btn(row, "🗑  Supprimer",  self._tpl_del,
+        self._btn(row, "🗑  Supprimer", self._tpl_del,
                   color=C_RED,  font_size=9).pack(side=tk.LEFT, padx=2)
 
     def _refresh_templates(self):
@@ -642,7 +944,7 @@ class FlashFMApp(tk.Tk):
     def _tpl_edit(self):
         tpl = self._get_tpl()
         if not tpl:
-            messagebox.showwarning("Sélection", "Sélectionnez un modèle à modifier.")
+            messagebox.showwarning("Sélection", "Sélectionnez un modèle.")
             return
         def on_save(updated):
             idx = self.templates.index(tpl)
@@ -667,16 +969,16 @@ class FlashFMApp(tk.Tk):
     # ⑥ Envoi
     def _build_step6(self):
         f = self._section("Envoi des emails", "⑥", color="#6D3B8A")
-
         row = tk.Frame(f, bg=C_WHITE)
         row.pack(fill=tk.X)
-
-        self._btn(row, f"📧   Test → {TEST_EMAIL}", self._send_test,
-                  color=C_BLUE, font_size=11).pack(side=tk.LEFT, padx=(0, 12))
-        self._btn(row, "🚀   Envoyer aux gagnants", self._send_all,
-                  color=C_GREEN, font_size=11).pack(side=tk.LEFT)
-
-        self.lbl_send = tk.Label(f, text="", bg=C_WHITE, fg=C_GREEN, font=("", 10))
+        self._btn(row, f"📧   Test → {TEST_EMAIL}",
+                  self._send_test, color=C_BLUE,
+                  font_size=11).pack(side=tk.LEFT, padx=(0, 12))
+        self._btn(row, "🚀   Envoyer aux gagnants",
+                  self._send_all, color=C_GREEN,
+                  font_size=11).pack(side=tk.LEFT)
+        self.lbl_send = tk.Label(f, text="", bg=C_WHITE,
+                                  fg=C_GREEN, font=("", 10))
         self.lbl_send.pack(anchor="w", pady=(8, 0))
 
     def _variables(self, prenom="Pascal", nom="Thomas"):
@@ -686,13 +988,12 @@ class FlashFMApp(tk.Tk):
     def _send_test(self):
         tpl = self._get_tpl()
         if not tpl:
-            messagebox.showwarning("Modèle manquant", "Sélectionnez un modèle d'email.")
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.")
             return
-        v = self._variables()
+        v       = self._variables()
         subject = apply_vars(tpl['subject'], v)
         html    = apply_vars(tpl['html'],    v)
         plain   = apply_vars(tpl['plain'],   v)
-
         self.lbl_send.config(text="⏳  Envoi du test…", fg=C_GRAY)
         self.update()
 
@@ -700,33 +1001,32 @@ class FlashFMApp(tk.Tk):
             try:
                 send_smtp(TEST_EMAIL, subject, html, plain)
                 self.after(0, lambda: self.lbl_send.config(
-                    text=f"✓  Mail de test envoyé à {TEST_EMAIL}", fg=C_GREEN))
+                    text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN))
                 self.after(0, lambda: self._log(
-                    f"Test envoyé à {TEST_EMAIL} – Sujet : {subject}"))
+                    f"Test envoyé à {TEST_EMAIL} – {subject}"))
             except Exception as e:
                 self.after(0, lambda: self.lbl_send.config(
                     text=f"✗  Erreur : {e}", fg=C_RED))
-                self.after(0, lambda: self._log(f"Erreur envoi test : {e}"))
+                self.after(0, lambda: self._log(f"Erreur test : {e}"))
 
         threading.Thread(target=run, daemon=True).start()
 
     def _send_all(self):
         if not self.winners:
-            messagebox.showwarning("Tirage manquant",
-                "Effectuez d'abord le tirage (étape ③).")
+            messagebox.showwarning("Tirage", "Effectuez d'abord le tirage (③).")
             return
         tpl = self._get_tpl()
         if not tpl:
-            messagebox.showwarning("Modèle manquant", "Sélectionnez un modèle d'email.")
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.")
             return
-        without = [w for w in self.winners if not w['email']]
-        if without:
-            noms = ", ".join(f"{w['prenom']} {w['nom']}" for w in without)
+        no_email = [w for w in self.winners if not w['email']]
+        if no_email:
+            noms = ", ".join(f"{w['prenom']} {w['nom']}" for w in no_email)
             if not messagebox.askyesno("Emails manquants",
-                    f"Ces gagnants n'ont pas d'email :\n{noms}\n\nContinuer quand même ?"):
+                    f"Sans email :\n{noms}\n\nContinuer ?"):
                 return
-        if not messagebox.askyesno("Confirmation envoi",
-                f"Envoyer {len(self.winners)} emails personnalisés aux gagnants ?"):
+        if not messagebox.askyesno("Confirmation",
+                f"Envoyer {len(self.winners)} emails aux gagnants ?"):
             return
 
         self.lbl_send.config(text="⏳  Envoi en cours…", fg=C_GRAY)
@@ -752,14 +1052,13 @@ class FlashFMApp(tk.Tk):
                     ww, ee = dict(w), str(e)
                     self.after(0, lambda x=ww, err=ee: self._log(
                         f"✗  {x['email']} : {err}"))
-
-            msg = f"✓  {ok} email(s) envoyé(s)"
+            msg   = f"✓  {ok} email(s) envoyé(s)"
             if errs:
                 msg += f"  —  {len(errs)} erreur(s)"
             color = C_GREEN if not errs else C_RED
             self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
             self.after(0, lambda: self._log(
-                f"Envoi terminé : {ok} OK, {len(errs)} erreur(s)"))
+                f"Envoi : {ok} OK, {len(errs)} erreur(s)"))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -767,9 +1066,9 @@ class FlashFMApp(tk.Tk):
     def _build_log(self):
         f = self._section("Journal", "📋", color="#555")
         self.log = scrolledtext.ScrolledText(
-            f, height=8, wrap=tk.WORD,
-            bg="#1C1C1E", fg="#D4D4D4", font=("Courier", 10),
-            insertbackground=C_WHITE)
+            f, height=10, wrap=tk.WORD,
+            bg="#1C1C1E", fg="#D4D4D4",
+            font=("Courier", 10), insertbackground=C_WHITE)
         self.log.pack(fill=tk.BOTH, expand=True)
         self.log.config(state=tk.DISABLED)
 
