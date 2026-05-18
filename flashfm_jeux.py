@@ -166,16 +166,15 @@ def _find_col(header_row, keywords):
     return None
 
 
-def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows):
+def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
+                                  col_inserted):
     """
     Vérifie l'éligibilité ET enregistre le gagnant dans 'liste des gagnants'.
     Retourne (valide: bool, raison: str).
 
-    Logique :
-    - Si banni → invalide
-    - Si absent du tableau → ajoute une ligne, insère colonne F
-    - Si présent → vérifie dates (< 6 mois → invalide), puis insère colonne F
-    La colonne F est toujours insérée en position 5 (décale les colonnes existantes).
+    col_inserted : liste à un élément [bool] partagée entre les appels.
+    La colonne F n'est insérée qu'une seule fois (premier gagnant validé) ;
+    les gagnants suivants réutilisent cette même colonne.
     """
     nom    = normalize(candidate['nom'])
     prenom = normalize(candidate['prenom'])
@@ -247,13 +246,15 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows):
         reason = (f"OK (dernière victoire le {max(last_all).strftime('%d/%m/%Y')}, "
                   f"plus de 6 mois)") if last_all else "OK (déjà gagnant, sans date récente)"
 
-    # ── Insertion de la colonne F (décale les colonnes ≥ F) ──
-    sh.batch_update({"requests": [{"insertDimension": {
-        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
-                  "startIndex": 5, "endIndex": 6},
-        "inheritFromBefore": False
-    }}]})
-    ws.update(values=[[nom_jeu]], range_name="F3")
+    # ── Colonne F : insérée une seule fois pour le tirage ──
+    if not col_inserted[0]:
+        sh.batch_update({"requests": [{"insertDimension": {
+            "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                      "startIndex": 5, "endIndex": 6},
+            "inheritFromBefore": False
+        }}]})
+        ws.update(values=[[nom_jeu]], range_name="F3")
+        col_inserted[0] = True
     ws.update(values=[[today.strftime("%d/%m/%Y")]], range_name=f"F{winner_row_1idx}")
 
     return True, reason
@@ -276,13 +277,14 @@ def draw_with_checks(participants, n, creds_path, nom_jeu,
     random.shuffle(pool)
 
     winners, excluded = [], 0
+    col_inserted = [False]
 
     for candidate in pool:
         if len(winners) >= n:
             break
         try:
             valid, reason = validate_and_register_winner(
-                candidate, nom_jeu, sh, banned_rows)
+                candidate, nom_jeu, sh, banned_rows, col_inserted)
         except Exception as e:
             log_cb(f"⚠  Erreur {candidate['prenom']} {candidate['nom']} : {e}")
             continue
@@ -490,9 +492,61 @@ def send_smtp(to_addr, subject, html_body, plain_body):
     msg["To"]      = to_addr
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as srv:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as srv:
         srv.login(SMTP_LOGIN, SMTP_PASSWORD)
         srv.sendmail(FROM_ADDR, to_addr, msg.as_string())
+
+
+# ══════════════════════════════════════════════════════════
+#  Bouton coloré cross-platform
+# ══════════════════════════════════════════════════════════
+
+class ColorButton(tk.Frame):
+    """Bouton avec couleur de fond garantie sur Windows, macOS et Linux."""
+    def __init__(self, parent, text="", command=None,
+                 bg=C_DARK, fg=C_WHITE, font_size=10, padx=14, pady=7):
+        super().__init__(parent, bg=bg)
+        self._bg  = bg
+        self._fg  = fg
+        self._cmd = command
+        self._on  = True
+        self._lbl = tk.Label(self, text=text, bg=bg, fg=fg,
+                             font=("", font_size, "bold"),
+                             padx=padx, pady=pady, cursor="hand2")
+        self._lbl.pack()
+        for w in (self, self._lbl):
+            w.bind("<ButtonRelease-1>", self._fire)
+            w.bind("<Enter>",  lambda e: self._tint(0.82) if self._on else None)
+            w.bind("<Leave>",  lambda e: self._tint(1.0))
+
+    def _fire(self, _):
+        if self._on and self._cmd:
+            self._cmd()
+
+    def _tint(self, factor):
+        r, g, b = (int(self._bg[i:i+2], 16) for i in (1, 3, 5))
+        c = "#{:02x}{:02x}{:02x}".format(
+            min(255, int(r * factor)),
+            min(255, int(g * factor)),
+            min(255, int(b * factor)))
+        self._lbl.config(bg=c)
+        tk.Frame.config(self, bg=c)
+
+    def config(self, **kw):
+        state = kw.pop("state", None)
+        text  = kw.pop("text",  None)
+        if state == tk.DISABLED:
+            self._on = False
+            self._lbl.config(fg="#999999", cursor="")
+            tk.Frame.config(self, cursor="")
+        elif state == tk.NORMAL:
+            self._on = True
+            self._lbl.config(fg=self._fg, cursor="hand2")
+            tk.Frame.config(self, cursor="hand2")
+        if text is not None:
+            self._lbl.config(text=text)
+        if kw:
+            tk.Frame.config(self, **kw)
 
 
 # ══════════════════════════════════════════════════════════
@@ -553,12 +607,12 @@ class TemplateEditor(tk.Toplevel):
 
         bf = tk.Frame(frm, bg=C_LIGHT)
         bf.grid(row=4, column=0, columnspan=2, pady=14)
-        tk.Button(bf, text="Annuler", command=self.destroy,
-                  bg=C_LGRAY, fg=C_DARK, padx=16, pady=6,
-                  relief=tk.FLAT).pack(side=tk.RIGHT, padx=6)
-        tk.Button(bf, text="✓  Enregistrer", command=self._save,
-                  bg=C_GREEN, fg=C_WHITE, font=("", 10, "bold"),
-                  padx=16, pady=6, relief=tk.FLAT).pack(side=tk.RIGHT)
+        ColorButton(bf, text="Annuler", command=self.destroy,
+                    bg=C_LGRAY, fg=C_DARK, padx=16, pady=6).pack(
+            side=tk.RIGHT, padx=6)
+        ColorButton(bf, text="✓  Enregistrer", command=self._save,
+                    bg=C_GREEN, fg=C_WHITE, font_size=10, padx=16, pady=6).pack(
+            side=tk.RIGHT)
 
     def _save(self):
         name = self.v_name.get().strip()
@@ -651,10 +705,8 @@ class FlashFMApp(tk.Tk):
 
     @staticmethod
     def _btn(parent, text, cmd, color=C_DARK, fg=C_WHITE, font_size=10):
-        return tk.Button(parent, text=text, command=cmd,
-                         bg=color, fg=fg, font=("", font_size, "bold"),
-                         padx=14, pady=7, relief=tk.FLAT, cursor="hand2",
-                         activebackground=color, activeforeground=fg)
+        return ColorButton(parent, text=text, command=cmd,
+                           bg=color, fg=fg, font_size=font_size)
 
     # ── Construction des étapes ───────────────────────────
     def _build_steps(self):
@@ -990,8 +1042,10 @@ class FlashFMApp(tk.Tk):
         self.lbl_send.pack(anchor="w", pady=(8, 0))
 
     def _variables(self, prenom="Pascal", nom="Thomas"):
-        return {k: v.get() for k, v in self.gv.items()} | {
-            "prenom": prenom, "nom": nom}
+        d = {k: v.get() for k, v in self.gv.items()}
+        d["prenom"] = prenom
+        d["nom"]    = nom
+        return d
 
     def _send_test(self):
         tpl = self._get_tpl()
@@ -1008,14 +1062,21 @@ class FlashFMApp(tk.Tk):
         def run():
             try:
                 send_smtp(TEST_EMAIL, subject, html, plain)
-                self.after(0, lambda: self.lbl_send.config(
-                    text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN))
-                self.after(0, lambda: self._log(
-                    f"Test envoyé à {TEST_EMAIL} – {subject}"))
+                def ok():
+                    self.lbl_send.config(
+                        text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN)
+                    self._log(f"Test envoyé à {TEST_EMAIL} – {subject}")
+                    messagebox.showinfo("Mail de test envoyé",
+                        f"✓  Mail envoyé à {TEST_EMAIL}")
+                self.after(0, ok)
             except Exception as e:
-                self.after(0, lambda: self.lbl_send.config(
-                    text=f"✗  Erreur : {e}", fg=C_RED))
-                self.after(0, lambda: self._log(f"Erreur test : {e}"))
+                err = str(e)
+                def ko():
+                    self.lbl_send.config(
+                        text=f"✗  Erreur SMTP : {err}", fg=C_RED)
+                    self._log(f"Erreur SMTP (test) : {err}")
+                    messagebox.showerror("Erreur SMTP", err)
+                self.after(0, ko)
 
         threading.Thread(target=run, daemon=True).start()
 
