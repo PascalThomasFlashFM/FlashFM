@@ -253,7 +253,10 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
                       "startIndex": 5, "endIndex": 6},
             "inheritFromBefore": False
         }}]})
-        ws.update(values=[[nom_jeu]], range_name="F3")
+        MOIS_FR = ["janvier","février","mars","avril","mai","juin",
+                   "juillet","août","septembre","octobre","novembre","décembre"]
+        mois_an = f"{MOIS_FR[today.month - 1]} {today.year}"
+        ws.update(values=[[f"{nom_jeu} {mois_an}"]], range_name="F3")
         col_inserted[0] = True
     ws.update(values=[[today.strftime("%d/%m/%Y")]], range_name=f"F{winner_row_1idx}")
 
@@ -490,11 +493,12 @@ def send_smtp(to_addr, subject, html_body, plain_body):
     msg["Subject"] = subject
     msg["From"]    = f"{FROM_NAME} <{FROM_ADDR}>"
     msg["To"]      = to_addr
+    msg["Cc"]      = FROM_ADDR
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as srv:
         srv.login(SMTP_LOGIN, SMTP_PASSWORD)
-        srv.sendmail(FROM_ADDR, to_addr, msg.as_string())
+        srv.sendmail(FROM_ADDR, [to_addr, FROM_ADDR], msg.as_string())
 
 
 # ══════════════════════════════════════════════════════════
@@ -942,7 +946,11 @@ class FlashFMApp(tk.Tk):
             return
 
         nom_jeu   = self.gv['nom_jeu'].get()
-        tab_name  = f"Gagnants - {nom_jeu[:40]}"
+        MOIS_FR   = ["janvier","février","mars","avril","mai","juin",
+                     "juillet","août","septembre","octobre","novembre","décembre"]
+        now       = datetime.now()
+        mois_an   = f"{MOIS_FR[now.month - 1]} {now.year}"
+        tab_name  = f"{nom_jeu[:45]} {mois_an}"
         game_info = {k: v.get() for k, v in self.gv.items()}
 
         self.lbl_sheets.config(text="⏳  Export en cours…", fg=C_GRAY)
