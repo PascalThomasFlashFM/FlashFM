@@ -159,79 +159,27 @@ def _sheets_client(creds_path):
     return gc.open_by_key(SPREADSHEET_ID)
 
 
-def load_eligibility_data(creds_path):
+def _find_col(header_row, keywords):
+    for i, h in enumerate(header_row):
+        if any(kw in normalize(h) for kw in keywords):
+            return i
+    return None
+
+
+def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows):
     """
-    Charge depuis Google Sheets :
-      - la liste des joueurs bannis
-      - l'historique des gagnants avec leurs dates
-    Retourne (banned_rows, winners_data)
-    """
-    sh = _sheets_client(creds_path)
-
-    # ── Joueurs bannis ────────────────────────────────────
-    banned_ws   = sh.worksheet("Joueurs à bannir des jeux")
-    all_banned  = banned_ws.get_all_values()
-    # On garde toutes les lignes (sauf la première si c'est un en-tête)
-    # et on filtre les vides
-    banned_rows = [
-        row for row in all_banned[1:]
-        if any(c.strip() for c in row)
-    ]
-
-    # ── Liste des gagnants ────────────────────────────────
-    winners_ws  = sh.worksheet("liste des gagnants")
-    all_winners = winners_ws.get_all_values()
-
-    if len(all_winners) < 4:
-        return banned_rows, []
-
-    # Les en-têtes sont en ligne 3 (index 2)
-    header_row = all_winners[2]
-
-    # Trouver colonnes Nom et Prénom dans les en-têtes
-    def find_col(hdrs, keywords):
-        for i, h in enumerate(hdrs):
-            if any(kw in normalize(h) for kw in keywords):
-                return i
-        return None
-
-    nom_col    = find_col(header_row, ['nom'])
-    prenom_col = find_col(header_row, ['prenom', 'prénom'])
-    if nom_col    is None: nom_col    = 0
-    if prenom_col is None: prenom_col = 1
-
-    # Colonnes de dates : F et au-delà (index ≥ 5) avec un en-tête non vide
-    date_cols = [i for i in range(5, len(header_row)) if header_row[i].strip()]
-
-    winners_data = []
-    for row in all_winners[3:]:  # données à partir de la ligne 4
-        if not row or not any(c.strip() for c in row):
-            continue
-        n_val = row[nom_col].strip()    if nom_col    < len(row) else ""
-        p_val = row[prenom_col].strip() if prenom_col < len(row) else ""
-        if not n_val:
-            continue
-
-        dates = []
-        for i in date_cols:
-            if i < len(row) and row[i].strip():
-                d = parse_date(row[i])
-                if d:
-                    dates.append(d)
-
-        winners_data.append({'nom': n_val, 'prenom': p_val, 'dates': dates})
-
-    return banned_rows, winners_data
-
-
-def check_eligibility(candidate, banned_rows, winners_data):
-    """
+    Vérifie l'éligibilité ET enregistre le gagnant dans 'liste des gagnants'.
     Retourne (valide: bool, raison: str).
-    1. Vérifie la liste des bannis.
-    2. Vérifie l'historique des gagnants (dates < 6 mois → refusé).
+
+    Logique :
+    - Si banni → invalide
+    - Si absent du tableau → ajoute une ligne, insère colonne F
+    - Si présent → vérifie dates (< 6 mois → invalide), puis insère colonne F
+    La colonne F est toujours insérée en position 5 (décale les colonnes existantes).
     """
     nom    = normalize(candidate['nom'])
     prenom = normalize(candidate['prenom'])
+    today  = datetime.now()
 
     # ── Vérification 1 : liste des bannis ─────────────────
     for row in banned_rows:
@@ -239,32 +187,91 @@ def check_eligibility(candidate, banned_rows, winners_data):
         if nom in row_text and prenom in row_text:
             return False, "Banni des jeux"
 
-    # ── Vérification 2 : historique des gains ─────────────
-    six_months_ago = datetime.now() - timedelta(days=183)
+    # ── Vérification 2 : lecture fraîche de l'historique ──
+    ws       = sh.worksheet("liste des gagnants")
+    all_vals = ws.get_all_values()
 
-    for entry in winners_data:
-        if normalize(entry['nom']) == nom and normalize(entry['prenom']) == prenom:
-            dates = entry.get('dates', [])
-            if not dates:
-                return True, "Déjà gagnant mais aucune date récente"
-            recent = [d for d in dates if d > six_months_ago]
-            if recent:
-                last = max(recent).strftime('%d/%m/%Y')
-                return False, f"A gagné le {last} (moins de 6 mois)"
-            else:
-                last = max(dates).strftime('%d/%m/%Y')
-                return True, f"OK (dernière victoire le {last}, plus de 6 mois)"
+    header_row = all_vals[2] if len(all_vals) > 2 else []
+    nom_col    = _find_col(header_row, ['nom'])
+    prenom_col = _find_col(header_row, ['prenom', 'prénom'])
+    if nom_col    is None: nom_col    = 0
+    if prenom_col is None: prenom_col = 1
 
-    return True, "OK"
+    date_cols = [i for i in range(5, len(header_row)) if header_row[i].strip()]
+
+    winner_row_1idx = None
+    for i, row in enumerate(all_vals):
+        if i < 3 or not any(c.strip() for c in row):
+            continue
+        n_val = row[nom_col].strip()    if nom_col    < len(row) else ""
+        p_val = row[prenom_col].strip() if prenom_col < len(row) else ""
+        if normalize(n_val) == nom and normalize(p_val) == prenom:
+            winner_row_1idx = i + 1
+            break
+
+    six_months_ago = today - timedelta(days=183)
+
+    if winner_row_1idx is None:
+        # Nouveau gagnant : on ajoute une ligne
+        first_empty = len(all_vals) + 1
+        for i in range(3, len(all_vals)):
+            if not any(c.strip() for c in all_vals[i]):
+                first_empty = i + 1
+                break
+        ws.update(
+            values=[[candidate['nom'], candidate['prenom'],
+                     candidate.get('ville', ''), candidate['email'],
+                     format_phone(candidate['phone'])]],
+            range_name=f"A{first_empty}:E{first_empty}"
+        )
+        winner_row_1idx = first_empty
+        reason = "OK"
+    else:
+        # Gagnant connu : vérifier dates récentes
+        row = all_vals[winner_row_1idx - 1]
+        recent = []
+        for i in date_cols:
+            if i < len(row) and row[i].strip():
+                d = parse_date(row[i])
+                if d and d > six_months_ago:
+                    recent.append(d)
+        if recent:
+            last = max(recent).strftime('%d/%m/%Y')
+            return False, f"A gagné le {last} (moins de 6 mois)"
+        last_all = []
+        for i in date_cols:
+            if i < len(row) and row[i].strip():
+                d = parse_date(row[i])
+                if d:
+                    last_all.append(d)
+        reason = (f"OK (dernière victoire le {max(last_all).strftime('%d/%m/%Y')}, "
+                  f"plus de 6 mois)") if last_all else "OK (déjà gagnant, sans date récente)"
+
+    # ── Insertion de la colonne F (décale les colonnes ≥ F) ──
+    sh.batch_update({"requests": [{"insertDimension": {
+        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                  "startIndex": 5, "endIndex": 6},
+        "inheritFromBefore": False
+    }}]})
+    ws.update(values=[[nom_jeu]], range_name="F3")
+    ws.update(values=[[today.strftime("%d/%m/%Y")]], range_name=f"F{winner_row_1idx}")
+
+    return True, reason
 
 
-def draw_with_checks(participants, n, banned_rows, winners_data,
+def draw_with_checks(participants, n, creds_path, nom_jeu,
                      log_cb, done_cb, error_cb):
     """
-    Tirage au sort aléatoire avec vérification d'éligibilité.
-    Remplace automatiquement les participants refusés.
+    Tirage au sort aléatoire avec vérification d'éligibilité et enregistrement.
     Exécuté dans un thread secondaire.
     """
+    sh = _sheets_client(creds_path)
+
+    banned_ws  = sh.worksheet("Joueurs à bannir des jeux")
+    all_banned = banned_ws.get_all_values()
+    banned_rows = [row for row in all_banned[1:] if any(c.strip() for c in row)]
+    log_cb(f"Données chargées : {len(banned_rows)} joueur(s) banni(s).")
+
     pool = [p for p in participants if p['email']]
     random.shuffle(pool)
 
@@ -273,7 +280,12 @@ def draw_with_checks(participants, n, banned_rows, winners_data,
     for candidate in pool:
         if len(winners) >= n:
             break
-        valid, reason = check_eligibility(candidate, banned_rows, winners_data)
+        try:
+            valid, reason = validate_and_register_winner(
+                candidate, nom_jeu, sh, banned_rows)
+        except Exception as e:
+            log_cb(f"⚠  Erreur {candidate['prenom']} {candidate['nom']} : {e}")
+            continue
         if valid:
             winners.append(candidate)
             log_cb(f"✓  {candidate['prenom']} {candidate['nom']} — {reason}")
@@ -800,21 +812,17 @@ class FlashFMApp(tk.Tk):
 
         # Tirage avec vérification (threaded)
         self.btn_draw.config(state=tk.DISABLED, text="⏳  Tirage en cours…")
-        self.lbl_draw.config(text="Chargement des données d'éligibilité…",
+        self.lbl_draw.config(text="Vérification des éligibilités en cours…",
                              fg=C_GRAY)
         self.update()
 
+        nom_jeu = self.gv['nom_jeu'].get()
+
         def run():
             try:
-                banned_rows, winners_data = load_eligibility_data(
-                    self.creds_path.get())
-                self.after(0, lambda: self._log(
-                    f"Données chargées : {len(banned_rows)} bannis, "
-                    f"{len(winners_data)} entrées historique."))
-
                 draw_with_checks(
                     self.participants, n,
-                    banned_rows, winners_data,
+                    self.creds_path.get(), nom_jeu,
                     log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
                     error_cb = lambda m: self.after(0, lambda msg=m:
