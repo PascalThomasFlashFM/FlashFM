@@ -49,73 +49,89 @@ def normalise_phone(raw: str) -> str:
 def extract_fields(coordonnees: str) -> dict:
     """
     Extrait Prénom, Nom, téléphone, ville, email depuis la chaîne 'Coordonnees'.
-    Les champs peuvent être dans n'importe quel ordre, séparés par virgules ou
-    points-virgules.
+    Gère les formats : virgule-séparé, espace-séparé, multi-lignes, ordre variable.
     """
     result = {"prenom": "", "nom": "", "telephone": "", "ville": "", "email": ""}
     if not coordonnees or not isinstance(coordonnees, str):
         return result
 
-    text = coordonnees.strip()
+    # Normaliser les retours à la ligne en espaces
+    text = re.sub(r"\s*[\r\n]+\s*", " ", coordonnees).strip()
 
     # ── email ────────────────────────────────────────────────────────────────
     email_match = RE_EMAIL.search(text)
     if email_match:
         result["email"] = email_match.group(0).strip()
-        text = text[:email_match.start()] + text[email_match.end():]
+        text = text[:email_match.start()] + " " + text[email_match.end():]
 
     # ── téléphone ────────────────────────────────────────────────────────────
     phone_match = RE_PHONE.search(text)
     if phone_match:
         result["telephone"] = normalise_phone(phone_match.group(0))
-        text = text[:phone_match.start()] + text[phone_match.end():]
+        text = text[:phone_match.start()] + " " + text[phone_match.end():]
 
-    # ── ville (code postal + ville ou ville seule connue) ────────────────────
+    # Normaliser les espaces multiples
+    text = re.sub(r"\s+", " ", text).strip()
+
+    # ── ville via code postal (XXXXX NomVille) ───────────────────────────────
     city_match = RE_POSTAL_CITY.search(text)
     if city_match:
         result["ville"] = city_match.group(2).strip().title()
-        # Supprimer code postal + ville + éventuelle adresse de rue avant
-        start = city_match.start()
-        end = city_match.end()
-        # On retire aussi l'adresse qui précède le code postal sur la même "partie"
-        before = text[:start]
-        after = text[end:]
-        # Retirer la portion d'adresse qui se trouve entre la dernière virgule/point-virgule et le code postal
-        before_clean = re.sub(r"[^,;]*$", "", before)
-        text = before_clean + after
+        # Conserver uniquement ce qui précède le code postal,
+        # en retirant les mots d'adresse juste avant (ceux qui commencent par un chiffre)
+        prefix = text[:city_match.start()].strip().rstrip(",;")
+        suffix = text[city_match.end():].strip().lstrip(",;")
+        # Retirer les tokens d'adresse (numéro de rue, etc.) en fin de préfixe
+        prefix_words = prefix.split()
+        clean_prefix_words = []
+        hit_address = False
+        for w in prefix_words:
+            if re.match(r"^\d", w):
+                hit_address = True
+            if not hit_address:
+                clean_prefix_words.append(w)
+        text = " ".join(clean_prefix_words) + (" " + suffix if suffix else "")
+        text = re.sub(r"\s+", " ", text).strip()
     else:
-        # Tenter de trouver un code postal seul et retirer
+        # Code postal seul sans ville lisible → retirer
         postal_match = RE_POSTAL.search(text)
         if postal_match:
-            text = text[:postal_match.start()] + text[postal_match.end():]
+            text = (text[:postal_match.start()] + " " + text[postal_match.end():]).strip()
 
-    # ── Nom / Prénom depuis les fragments restants ───────────────────────────
-    parts = [p.strip() for p in re.split(r"[,;]+", text) if p.strip()]
-    name_parts = []
-    for p in parts:
-        if re.match(r"^\d", p):  # adresse avec numéro de rue
-            continue
-        if len(p) <= 2:
-            continue
-        name_parts.append(p)
+    # ── Nom / Prénom ─────────────────────────────────────────────────────────
+    def assign_name_city(words):
+        """words[0]=Nom, words[1]=Prénom, words[2:]=Ville (si ville pas encore connue)."""
+        if words:
+            result["nom"] = words[0].upper()
+        if len(words) >= 2:
+            result["prenom"] = words[1].title()
+        if len(words) >= 3 and not result["ville"]:
+            result["ville"] = " ".join(words[2:]).title()
 
-    if name_parts:
-        first_token = name_parts[0]
-        words = first_token.split()
-        if len(words) >= 2 and len(name_parts) == 1:
-            # "DUPONT Jean" ou "Marie MARTIN" : détecter lequel est le nom (MAJUSCULES)
-            upper_words = [w for w in words if w.isupper()]
-            title_words = [w for w in words if w.istitle() and not w.isupper()]
-            if upper_words and title_words:
-                result["nom"] = " ".join(upper_words)
-                result["prenom"] = " ".join(title_words).title()
+    # Cas 1 : séparateurs virgule ou point-virgule → split par virgule
+    if re.search(r"[,;]", text):
+        parts = [p.strip() for p in re.split(r"[,;]+", text)
+                 if p.strip() and len(p.strip()) > 2 and not re.match(r"^\d", p.strip())]
+        if parts:
+            first_words = parts[0].split()
+            if len(first_words) >= 2 and len(parts) == 1:
+                # Token unique multi-mots : Nom Prénom [Ville] tout en un
+                assign_name_city(first_words)
+            elif len(first_words) >= 3 and len(parts) >= 1:
+                # Première partie a 3+ mots → words[0]=Nom, words[1]=Prénom, la suite à la ville
+                result["nom"] = first_words[0].upper()
+                result["prenom"] = " ".join(first_words[1:]).title()
+                if not result["ville"] and len(parts) > 1:
+                    result["ville"] = parts[1].title()
             else:
-                # Heuristique : dernier mot = nom, reste = prénom
-                result["nom"] = words[-1].upper()
-                result["prenom"] = " ".join(words[:-1]).title()
-        else:
-            result["nom"] = name_parts[0].strip().upper() if len(name_parts) >= 1 else ""
-            result["prenom"] = name_parts[1].strip().title() if len(name_parts) >= 2 else ""
+                result["nom"] = parts[0].upper()
+                result["prenom"] = parts[1].title() if len(parts) > 1 else ""
+                if not result["ville"] and len(parts) > 2:
+                    result["ville"] = parts[2].title()
+    else:
+        # Cas 2 : tout espace-séparé → mot[0]=Nom, mot[1]=Prénom, reste=Ville
+        words = [w for w in text.split() if len(w) > 1 and not re.match(r"^\d", w)]
+        assign_name_city(words)
 
     return result
 
@@ -207,45 +223,57 @@ def write_to_sheet(records: list, log_callback=None) -> int:
 def parse_csv(filepath: str) -> list:
     """
     Lit le CSV et retourne une liste de dicts avec les champs extraits.
-    Gère les encodages UTF-8 et Latin-1.
+    Gère les encodages UTF-8 et Latin-1, les délimiteurs ; et ,
+    et les champs multi-lignes entre guillemets.
     """
     records = []
     encodings = ["utf-8-sig", "latin-1", "utf-8"]
+
     rows = None
+    last_error = None
 
     for enc in encodings:
-        try:
-            with open(filepath, newline="", encoding=enc) as f:
-                sample = f.read(4096)
-            # Détecter le délimiteur
-            dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
-            with open(filepath, newline="", encoding=enc) as f:
-                reader = csv.DictReader(f, dialect=dialect)
-                rows = list(reader)
+        # Essayer d'abord ';' (exports français), puis ',' puis détection auto
+        for delimiter in [";", ",", "\t"]:
+            try:
+                with open(filepath, newline="", encoding=enc) as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    candidate = list(reader)
+                # Valider : au moins 2 colonnes et au moins 1 ligne de données
+                if candidate and len(candidate[0].keys()) >= 2:
+                    rows = candidate
+                    break
+            except Exception as exc:
+                last_error = exc
+        if rows is not None:
             break
-        except Exception:
-            continue
 
     if rows is None:
-        raise ValueError("Impossible de lire le fichier CSV.")
+        raise ValueError(
+            f"Impossible de lire le fichier CSV.\n"
+            f"Dernière erreur : {last_error}"
+        )
 
-    # Trouver la colonne Coordonnees (insensible à la casse)
+    # Trouver la colonne Coordonnees (insensible à la casse, ignore BOM/espaces)
     coord_col = None
-    if rows:
-        for col in rows[0].keys():
-            if "coordonnee" in col.lower() or "coordonn" in col.lower():
-                coord_col = col
-                break
+    for col in rows[0].keys():
+        col_clean = col.strip().lstrip("﻿").lower()
+        if "coordonn" in col_clean:
+            coord_col = col
+            break
 
     if coord_col is None:
+        cols = list(rows[0].keys())
         raise ValueError(
-            "Colonne 'Coordonnees' introuvable dans le CSV.\n"
-            f"Colonnes disponibles : {list(rows[0].keys()) if rows else '(fichier vide)'}"
+            f"Colonne 'Coordonnees' introuvable dans le CSV.\n"
+            f"Colonnes détectées ({len(cols)}) : {cols}"
         )
 
     for row in rows:
-        raw = row.get(coord_col, "")
-        if raw.strip():
+        raw = row.get(coord_col, "") or ""
+        # Nettoyer le contenu multi-lignes (retours à la ligne dans le champ)
+        raw = " ".join(raw.splitlines()).strip()
+        if raw:
             fields = extract_fields(raw)
             fields["_raw"] = raw
             records.append(fields)
