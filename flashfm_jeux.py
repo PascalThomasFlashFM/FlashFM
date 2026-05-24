@@ -1253,7 +1253,12 @@ def get_or_create_dropbox_link(token, api_path):
     Récupère ou crée un lien de partage public Dropbox.
     Lève une exception avec un message clair en cas d'échec.
     """
-    import urllib.request, urllib.error as _ue
+    import urllib.request, urllib.error as _ue, ssl
+
+    # Contourne les problèmes de certificats SSL sur macOS
+    _ssl_ctx = ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
 
     hdrs = {'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'}
@@ -1263,7 +1268,7 @@ def get_or_create_dropbox_link(token, api_path):
             f'https://api.dropboxapi.com/2/{endpoint}',
             data=json.dumps(payload).encode(),
             headers=hdrs, method='POST')
-        with urllib.request.urlopen(req, timeout=20) as r:
+        with urllib.request.urlopen(req, timeout=20, context=_ssl_ctx) as r:
             return json.loads(r.read())
 
     # 1. Lien existant ?
