@@ -1066,31 +1066,50 @@ class FlashFMApp(tk.Tk):
         if not tpl:
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.")
             return
-        v       = self._variables()
-        subject = apply_vars(tpl['subject'], v)
-        html    = apply_vars(tpl['html'],    v)
-        plain   = apply_vars(tpl['plain'],   v)
-        self.lbl_send.config(text="⏳  Envoi du test…", fg=C_GRAY)
+
+        # Prépare la liste des mails à envoyer (un par gagnant, ou un seul test)
+        if self.winners:
+            items = [(self._variables(prenom=w['prenom'], nom=w['nom']), w)
+                     for w in self.winners]
+        else:
+            items = [(self._variables(), None)]
+
+        self.lbl_send.config(
+            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
         self.update()
 
         def run():
-            try:
-                send_smtp(TEST_EMAIL, subject, html, plain)
-                def ok():
+            ok_count, errs = 0, []
+            for v, w in items:
+                subject = apply_vars(tpl['subject'], v)
+                html    = apply_vars(tpl['html'],    v)
+                plain   = apply_vars(tpl['plain'],   v)
+                # Sujet préfixé pour distinguer les mails de test
+                subject = f"[TEST] {subject}"
+                try:
+                    send_smtp(TEST_EMAIL, subject, html, plain)
+                    ok_count += 1
+                    name = f"{w['prenom']} {w['nom']}" if w else "test"
+                    self.after(0, lambda n=name: self._log(
+                        f"✓  Test ({n}) → {TEST_EMAIL}"))
+                except Exception as e:
+                    errs.append(str(e))
+                    self.after(0, lambda err=str(e): self._log(
+                        f"✗  Erreur SMTP : {err}"))
+
+            def finish():
+                if not errs:
                     self.lbl_send.config(
-                        text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN)
-                    self._log(f"Test envoyé à {TEST_EMAIL} – {subject}")
-                    messagebox.showinfo("Mail de test envoyé",
-                        f"✓  Mail envoyé à {TEST_EMAIL}")
-                self.after(0, ok)
-            except Exception as e:
-                err = str(e)
-                def ko():
+                        text=f"✓  {ok_count} mail(s) de test envoyé(s) à {TEST_EMAIL}",
+                        fg=C_GREEN)
+                    messagebox.showinfo("Tests envoyés",
+                        f"{ok_count} mail(s) envoyé(s) à {TEST_EMAIL}\n"
+                        f"(sujet préfixé [TEST])")
+                else:
                     self.lbl_send.config(
-                        text=f"✗  Erreur SMTP : {err}", fg=C_RED)
-                    self._log(f"Erreur SMTP (test) : {err}")
-                    messagebox.showerror("Erreur SMTP", err)
-                self.after(0, ko)
+                        text=f"✗  Erreur SMTP : {errs[0]}", fg=C_RED)
+                    messagebox.showerror("Erreur SMTP", errs[0])
+            self.after(0, finish)
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1294,11 +1313,11 @@ def extract_sports_winners(all_vals):
 def find_insert_row(all_vals):
     """
     Retourne la ligne (1-indexée) où commencer le prochain tableau :
-    2 lignes vides après la dernière cellule non-vide de la colonne A.
+    2 lignes vides après la dernière cellule non-vide de la colonne E (index 4).
     """
     last = 0
     for i, row in enumerate(all_vals):
-        if row and row[0].strip():
+        if len(row) > 4 and row[4].strip():
             last = i + 1
     return last + 3 if last else 1
 
@@ -2164,30 +2183,46 @@ class SportsApp(tk.Toplevel):
         if not tpl:
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
             return
-        v       = self._variables()
-        subject = apply_vars(tpl['subject'], v)
-        html    = apply_vars(tpl['html'],    v)
-        plain   = apply_vars(tpl['plain'],   v)
-        self.lbl_send.config(text="⏳  Envoi du test…", fg=C_GRAY)
+
+        if self.winners:
+            items = [(self._variables(winner=w), w) for w in self.winners]
+        else:
+            items = [(self._variables(), None)]
+
+        self.lbl_send.config(
+            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
         self.update()
 
         def run():
-            try:
-                send_smtp(TEST_EMAIL, subject, html, plain)
-                def ok():
+            ok_count, errs = 0, []
+            for v, w in items:
+                subject = f"[TEST] {apply_vars(tpl['subject'], v)}"
+                html    = apply_vars(tpl['html'],  v)
+                plain   = apply_vars(tpl['plain'], v)
+                try:
+                    send_smtp(TEST_EMAIL, subject, html, plain)
+                    ok_count += 1
+                    name = f"{w['prenom']} {w['nom']}" if w else "test"
+                    self.after(0, lambda n=name: self._log(
+                        f"✓  Test ({n}) → {TEST_EMAIL}"))
+                except Exception as e:
+                    errs.append(str(e))
+                    self.after(0, lambda err=str(e): self._log(
+                        f"✗  Erreur SMTP : {err}"))
+
+            def finish():
+                if not errs:
                     self.lbl_send.config(
-                        text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN)
-                    self._log(f"Test envoyé à {TEST_EMAIL}")
-                    messagebox.showinfo("Test envoyé",
-                        f"Mail de test envoyé à {TEST_EMAIL} !", parent=self)
-                self.after(0, ok)
-            except Exception as e:
-                err = str(e)
-                def ko():
-                    self.lbl_send.config(text=f"✗  Erreur SMTP : {err}", fg=C_RED)
-                    self._log(f"Erreur SMTP : {err}")
-                    messagebox.showerror("Erreur SMTP", err, parent=self)
-                self.after(0, ko)
+                        text=f"✓  {ok_count} mail(s) de test envoyé(s) à {TEST_EMAIL}",
+                        fg=C_GREEN)
+                    messagebox.showinfo("Tests envoyés",
+                        f"{ok_count} mail(s) envoyé(s) à {TEST_EMAIL}\n"
+                        f"(sujet préfixé [TEST])", parent=self)
+                else:
+                    self.lbl_send.config(
+                        text=f"✗  Erreur SMTP : {errs[0]}", fg=C_RED)
+                    messagebox.showerror("Erreur SMTP", errs[0], parent=self)
+            self.after(0, finish)
 
         threading.Thread(target=run, daemon=True).start()
 
