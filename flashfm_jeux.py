@@ -1242,7 +1242,12 @@ def local_to_dropbox_api_path(local_path):
     if not dbx_root:
         return None
     try:
-        rel = os.path.relpath(local_path, dbx_root)
+        # realpath résout la casse réelle du filesystem (macOS insensible à la casse)
+        real_local = os.path.realpath(local_path)
+        real_root  = os.path.realpath(dbx_root)
+        rel = os.path.relpath(real_local, real_root)
+        if rel.startswith('..'):
+            return None
         return '/' + rel.replace(os.sep, '/')
     except ValueError:
         return None
