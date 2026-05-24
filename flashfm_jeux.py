@@ -9,10 +9,11 @@ Nécessite : pip install gspread google-auth
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import json, os, csv, io, re, random, smtplib, threading, unicodedata
+import json, os, csv, io, re, random, smtplib, threading, unicodedata, shutil
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from urllib.parse import quote
 
 try:
     import gspread
@@ -24,6 +25,7 @@ except ImportError:
 # ─── Chemins ──────────────────────────────────────────────
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_PATH = os.path.join(BASE_DIR, "flashfm_templates.json")
+CLUBS_PATH     = os.path.join(BASE_DIR, "flashfm_clubs.json")
 
 # ─── SMTP OVH ─────────────────────────────────────────────
 SMTP_SERVER    = "ssl0.ovh.net"
@@ -663,6 +665,10 @@ class FlashFMApp(tk.Tk):
                  font=("", 22, "bold"), pady=12).pack(side=tk.LEFT, padx=20)
         tk.Label(h, text="Gestionnaire de Jeux Concours",
                  bg=C_DARK, fg=C_WHITE, font=("", 12)).pack(side=tk.LEFT, padx=4)
+        ColorButton(h, text="⚽  E-Billets Sports",
+                    command=lambda: SportsApp(self),
+                    bg="#1A4B8C", fg=C_WHITE, font_size=9).pack(
+            side=tk.RIGHT, padx=12)
 
     # ── Zone défilante ────────────────────────────────────
     def _build_scroll_area(self):
@@ -1155,6 +1161,798 @@ class FlashFMApp(tk.Tk):
         self.log.insert(tk.END, f"[{ts}]  {msg}\n")
         self.log.see(tk.END)
         self.log.config(state=tk.DISABLED)
+
+
+# ══════════════════════════════════════════════════════════
+#  Clubs data (Sports variant)
+# ══════════════════════════════════════════════════════════
+
+def load_clubs():
+    if os.path.exists(CLUBS_PATH):
+        with open(CLUBS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_clubs(clubs):
+    with open(CLUBS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(clubs, f, ensure_ascii=False, indent=2)
+
+
+def make_dropbox_url(base_url, *path_parts):
+    """URL Dropbox d'un sous-dossier : lien racine + chemin relatif encodé."""
+    base   = base_url.strip().rstrip('/').split('?')[0]
+    suffix = '/'.join(quote(p, safe='') for p in path_parts)
+    return f"{base}/{suffix}"
+
+
+# ══════════════════════════════════════════════════════════
+#  Application E-Billets Clubs Sportifs
+# ══════════════════════════════════════════════════════════
+
+class SportsApp(tk.Toplevel):
+    C_SPORT = "#1A4B8C"
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Flash FM – E-Billets Clubs Sportifs")
+        self.geometry("840x980")
+        self.minsize(700, 700)
+        self.configure(bg=C_LIGHT)
+        self.resizable(True, True)
+
+        self.clubs       = load_clubs()
+        self.templates   = load_templates()
+        self.participants = []
+        self.winners     = []
+        self.winner_urls = {}        # {email: dropbox_url}
+        self.creds_path  = tk.StringVar()
+        self.root_path   = tk.StringVar()
+        self.base_url    = tk.StringVar()
+
+        self._build_header()
+        self._build_scroll_area()
+
+    # ── En-tête ───────────────────────────────────────────
+    def _build_header(self):
+        h = tk.Frame(self, bg=self.C_SPORT)
+        h.pack(fill=tk.X)
+        tk.Label(h, text="FLASH FM", bg=self.C_SPORT, fg=C_RED,
+                 font=("", 20, "bold"), pady=10).pack(side=tk.LEFT, padx=20)
+        tk.Label(h, text="E-Billets Clubs Sportifs",
+                 bg=self.C_SPORT, fg=C_WHITE, font=("", 12)).pack(side=tk.LEFT)
+
+    # ── Zone défilante ────────────────────────────────────
+    def _build_scroll_area(self):
+        container = tk.Frame(self, bg=C_LIGHT)
+        container.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(container, bg=C_LIGHT, highlightthickness=0)
+        sb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._inner = tk.Frame(canvas, bg=C_LIGHT)
+        win_id = canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._inner.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+            lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+        self._build_steps()
+        tk.Frame(self._inner, bg=C_LIGHT, height=24).pack()
+
+    # ── Helpers UI ────────────────────────────────────────
+    def _section(self, title, number):
+        outer = tk.Frame(self._inner, bg=C_LIGHT)
+        outer.pack(fill=tk.X, padx=18, pady=(10, 2))
+        hdr = tk.Frame(outer, bg=self.C_SPORT)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text=f"   {number}   {title}", bg=self.C_SPORT,
+                 fg=C_WHITE, font=("", 11, "bold"), anchor="w",
+                 pady=7).pack(fill=tk.X)
+        body = tk.Frame(outer, bg=C_WHITE, bd=1, relief=tk.GROOVE)
+        body.pack(fill=tk.X)
+        inner = tk.Frame(body, bg=C_WHITE, padx=16, pady=12)
+        inner.pack(fill=tk.X)
+        return inner
+
+    def _log(self, msg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_widget.config(state=tk.NORMAL)
+        self.log_widget.insert(tk.END, f"[{ts}]  {msg}\n")
+        self.log_widget.see(tk.END)
+        self.log_widget.config(state=tk.DISABLED)
+
+    # ── Construction des étapes ───────────────────────────
+    def _build_steps(self):
+        self._build_step1()
+        self._build_step2()
+        self._build_step3()
+        self._build_step4()
+        self._build_step5()
+        self._build_step6()
+        self._build_step7()
+        self._build_log()
+
+    # ① Paramètres du match
+    def _build_step1(self):
+        f = self._section("Paramètres du match", "①")
+        self.gv = {}
+        for i, (lbl, key, ph) in enumerate([
+            ("Nom du jeu :",    "nom_jeu", "Limoges CSP vs Adversaire"),
+            ("Date et heure :", "date",    "samedi 6 juin 2026 à 20h00"),
+            ("Lieu :",          "lieu",    "Palais des Sports de Beaublanc"),
+        ]):
+            tk.Label(f, text=lbl, bg=C_WHITE, width=18, anchor="w",
+                     font=("", 10)).grid(row=i, column=0, sticky="w", pady=4)
+            var = tk.StringVar(value=ph)
+            self.gv[key] = var
+            ttk.Entry(f, textvariable=var, width=52).grid(
+                row=i, column=1, sticky="ew", padx=8)
+        tk.Label(f, text="Nombre de gagnants :", bg=C_WHITE, width=18,
+                 anchor="w", font=("", 10)).grid(row=3, column=0, sticky="w", pady=4)
+        self.nb_winners = tk.IntVar(value=5)
+        ttk.Spinbox(f, from_=1, to=100, textvariable=self.nb_winners,
+                    width=6, font=("", 11)).grid(row=3, column=1, sticky="w", padx=8)
+        f.columnconfigure(1, weight=1)
+
+    # ② CSV participants
+    def _build_step2(self):
+        f = self._section("Fichier CSV des participants", "②")
+        row = tk.Frame(f, bg=C_WHITE)
+        row.pack(fill=tk.X)
+        ColorButton(row, text="📂  Parcourir…", command=self._pick_csv,
+                    bg=C_DARK).pack(side=tk.LEFT)
+        self.lbl_csv = tk.Label(row, text="Aucun fichier sélectionné",
+                                bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        self.lbl_csv.pack(side=tk.LEFT, padx=12)
+        self.lbl_csv_info = tk.Label(f, text="", bg=C_WHITE,
+                                     fg=C_GREEN, font=("", 10))
+        self.lbl_csv_info.pack(anchor="w", pady=(4, 0))
+
+    def _pick_csv(self):
+        path = filedialog.askopenfilename(
+            title="Sélectionner le fichier CSV",
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")])
+        if not path:
+            return
+        try:
+            self.participants = parse_csv(path)
+            self.lbl_csv.config(text=os.path.basename(path),
+                                fg=C_DARK, font=("", 10))
+            self.lbl_csv_info.config(
+                text=f"✓  {len(self.participants)} participants uniques chargés")
+        except Exception as e:
+            messagebox.showerror("Erreur CSV", str(e), parent=self)
+
+    # ③ Configuration Dropbox & Google
+    def _build_step3(self):
+        f = self._section("Configuration Dropbox & Google", "③")
+
+        # Google credentials
+        cr = tk.Frame(f, bg=C_WHITE)
+        cr.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(cr, text="Credentials Google :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        ColorButton(cr, text="📄  JSON…", command=self._pick_creds,
+                    bg="#555", font_size=9).pack(side=tk.LEFT, padx=8)
+        self.lbl_creds = tk.Label(cr, text="Aucun fichier",
+                                   bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        self.lbl_creds.pack(side=tk.LEFT)
+
+        # Dossier racine local
+        dr = tk.Frame(f, bg=C_WHITE)
+        dr.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(dr, text="Dossier racine :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        ColorButton(dr, text="📁  Parcourir…", command=self._pick_root,
+                    bg="#555", font_size=9).pack(side=tk.LEFT, padx=8)
+        self.lbl_root = tk.Label(dr, text="Non défini",
+                                  bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        self.lbl_root.pack(side=tk.LEFT)
+
+        # URL de partage Dropbox
+        du = tk.Frame(f, bg=C_WHITE)
+        du.pack(fill=tk.X)
+        tk.Label(du, text="Lien Dropbox partagé :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        ttk.Entry(du, textvariable=self.base_url, width=46,
+                  font=("", 9)).pack(side=tk.LEFT, padx=8)
+        tk.Label(f,
+                 text="Collez ici le lien de partage Dropbox du dossier racine "
+                      "(ex. https://www.dropbox.com/sh/xxxx/AAAyyy)",
+                 bg=C_WHITE, fg=C_GRAY, font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+
+    def _pick_creds(self):
+        path = filedialog.askopenfilename(
+            title="Credentials Google (.json)",
+            filetypes=[("JSON", "*.json"), ("Tous", "*.*")])
+        if path:
+            self.creds_path.set(path)
+            self.lbl_creds.config(text=os.path.basename(path),
+                                   fg=C_DARK, font=("", 10))
+
+    def _pick_root(self):
+        path = filedialog.askdirectory(title="Dossier racine Dropbox")
+        if path:
+            self.root_path.set(path)
+            self.lbl_root.config(text=path, fg=C_DARK, font=("", 10))
+            self._on_partner_change()
+
+    # ④ Clubs partenaires & adversaires
+    def _build_step4(self):
+        f = self._section("Clubs partenaires & adversaires", "④")
+
+        # Club partenaire
+        tk.Label(f, text="Club partenaire :", bg=C_WHITE,
+                 font=("", 10, "bold")).pack(anchor="w")
+        pr = tk.Frame(f, bg=C_WHITE)
+        pr.pack(fill=tk.X, pady=(4, 2))
+        self.v_partner = tk.StringVar()
+        self.cb_partner = ttk.Combobox(pr, textvariable=self.v_partner,
+                                        state="readonly", width=28, font=("", 10))
+        self.cb_partner.pack(side=tk.LEFT)
+        self.cb_partner.bind("<<ComboboxSelected>>",
+                             lambda e: self._on_partner_change())
+        ColorButton(pr, text="＋ Nouveau",  command=self._add_partner,
+                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=(8, 2))
+        ColorButton(pr, text="✏ Renommer", command=self._rename_partner,
+                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=2)
+        ColorButton(pr, text="🗑 Supprimer", command=self._del_partner,
+                    bg=C_RED, font_size=9).pack(side=tk.LEFT, padx=2)
+        self.lbl_partner_path = tk.Label(f, text="", bg=C_WHITE,
+                                          fg=C_GRAY, font=("", 9, "italic"))
+        self.lbl_partner_path.pack(anchor="w", pady=(2, 8))
+
+        # Club adverse
+        tk.Label(f, text="Club adverse :", bg=C_WHITE,
+                 font=("", 10, "bold")).pack(anchor="w")
+        ar = tk.Frame(f, bg=C_WHITE)
+        ar.pack(fill=tk.X, pady=(4, 2))
+        self.v_opposing = tk.StringVar()
+        self.cb_opposing = ttk.Combobox(ar, textvariable=self.v_opposing,
+                                         state="readonly", width=28, font=("", 10))
+        self.cb_opposing.pack(side=tk.LEFT)
+        self.cb_opposing.bind("<<ComboboxSelected>>",
+                              lambda e: self._update_tickets_count())
+        ColorButton(ar, text="＋ Nouveau",  command=self._add_opposing,
+                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=(8, 2))
+        ColorButton(ar, text="✏ Renommer", command=self._rename_opposing,
+                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=2)
+        ColorButton(ar, text="🗑 Supprimer", command=self._del_opposing,
+                    bg=C_RED, font_size=9).pack(side=tk.LEFT, padx=2)
+        self.lbl_opposing_path = tk.Label(f, text="", bg=C_WHITE,
+                                           fg=C_GRAY, font=("", 9, "italic"))
+        self.lbl_opposing_path.pack(anchor="w", pady=(2, 4))
+        self.lbl_tickets_found = tk.Label(f, text="", bg=C_WHITE,
+                                           fg=C_GRAY, font=("", 10))
+        self.lbl_tickets_found.pack(anchor="w")
+
+        self._refresh_partners()
+
+    # ── Gestion clubs ─────────────────────────────────────
+    def _refresh_partners(self):
+        names = sorted(self.clubs.keys())
+        self.cb_partner['values'] = names
+        if names:
+            if self.v_partner.get() not in names:
+                self.v_partner.set(names[0])
+            self._on_partner_change()
+
+    def _on_partner_change(self):
+        partner = self.v_partner.get()
+        root    = self.root_path.get()
+        if root and partner:
+            path = os.path.join(root, partner)
+            exists = os.path.isdir(path)
+            self.lbl_partner_path.config(
+                text=f"📁  {path}",
+                fg=C_DARK if exists else C_RED)
+        else:
+            self.lbl_partner_path.config(text="")
+        self._refresh_opposing()
+
+    def _refresh_opposing(self):
+        partner   = self.v_partner.get()
+        opponents = sorted(self.clubs.get(partner, []))
+        self.cb_opposing['values'] = opponents
+        if opponents:
+            if self.v_opposing.get() not in opponents:
+                self.v_opposing.set(opponents[0])
+        else:
+            self.v_opposing.set("")
+        self._update_tickets_count()
+
+    def _update_tickets_count(self):
+        root     = self.root_path.get()
+        partner  = self.v_partner.get()
+        opposing = self.v_opposing.get()
+        if not (root and partner and opposing):
+            self.lbl_opposing_path.config(text="")
+            self.lbl_tickets_found.config(text="")
+            return
+        path = os.path.join(root, partner, opposing)
+        exists = os.path.isdir(path)
+        self.lbl_opposing_path.config(
+            text=f"📁  {path}",
+            fg=C_DARK if exists else C_RED)
+        if exists:
+            n     = len(self._list_tickets(path))
+            need  = self.nb_winners.get() * 2
+            color = C_GREEN if n >= need else C_RED
+            self.lbl_tickets_found.config(
+                text=f"{'✓' if n >= need else '⚠'}  {n} e-billet(s) disponible(s)"
+                     f"  (besoin : {need})", fg=color)
+        else:
+            self.lbl_tickets_found.config(text="⚠  Dossier non trouvé", fg=C_RED)
+
+    @staticmethod
+    def _list_tickets(folder):
+        try:
+            return sorted(
+                f for f in os.listdir(folder)
+                if os.path.isfile(os.path.join(folder, f))
+                and not f.startswith('.')
+            )
+        except OSError:
+            return []
+
+    def _ask_name(self, title, label, default=""):
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.geometry("340x130")
+        dlg.resizable(False, False)
+        dlg.configure(bg=C_LIGHT)
+        dlg.grab_set()
+        result = [None]
+        tk.Label(dlg, text=label, bg=C_LIGHT, font=("", 10)).pack(pady=(16, 4))
+        var = tk.StringVar(value=default)
+        e   = ttk.Entry(dlg, textvariable=var, width=36, font=("", 10))
+        e.pack()
+        e.focus()
+        e.select_range(0, tk.END)
+        def ok():
+            result[0] = var.get().strip()
+            dlg.destroy()
+        e.bind("<Return>", lambda _: ok())
+        bf = tk.Frame(dlg, bg=C_LIGHT)
+        bf.pack(pady=12)
+        ColorButton(bf, text="OK", command=ok,
+                    bg=self.C_SPORT).pack(side=tk.LEFT, padx=6)
+        ColorButton(bf, text="Annuler", command=dlg.destroy,
+                    bg=C_LGRAY, fg=C_DARK).pack(side=tk.LEFT)
+        dlg.wait_window()
+        return result[0]
+
+    def _add_partner(self):
+        name = self._ask_name("Nouveau club partenaire", "Nom du club :")
+        if not name:
+            return
+        if name in self.clubs:
+            messagebox.showwarning("Existant", f"« {name} » existe déjà.",
+                                   parent=self)
+            return
+        self.clubs[name] = []
+        save_clubs(self.clubs)
+        if self.root_path.get():
+            os.makedirs(os.path.join(self.root_path.get(), name), exist_ok=True)
+        self.v_partner.set(name)
+        self._refresh_partners()
+        self._log(f"Club partenaire ajouté : {name}")
+
+    def _rename_partner(self):
+        old = self.v_partner.get()
+        if not old:
+            return
+        new = self._ask_name("Renommer le club", "Nouveau nom :", default=old)
+        if not new or new == old:
+            return
+        self.clubs[new] = self.clubs.pop(old)
+        save_clubs(self.clubs)
+        if self.root_path.get():
+            src = os.path.join(self.root_path.get(), old)
+            dst = os.path.join(self.root_path.get(), new)
+            if os.path.isdir(src):
+                os.rename(src, dst)
+        self.v_partner.set(new)
+        self._refresh_partners()
+        self._log(f"Club renommé : {old} → {new}")
+
+    def _del_partner(self):
+        name = self.v_partner.get()
+        if not name:
+            return
+        if not messagebox.askyesno("Supprimer",
+                f"Supprimer le club partenaire « {name} » ?\n"
+                "(Le dossier local n'est PAS supprimé.)", parent=self):
+            return
+        self.clubs.pop(name, None)
+        save_clubs(self.clubs)
+        self._refresh_partners()
+        self._log(f"Club partenaire supprimé : {name}")
+
+    def _add_opposing(self):
+        partner = self.v_partner.get()
+        if not partner:
+            messagebox.showwarning("Club manquant",
+                "Sélectionnez d'abord un club partenaire.", parent=self)
+            return
+        name = self._ask_name("Nouveau club adverse", "Nom du club adverse :")
+        if not name:
+            return
+        if name in self.clubs.get(partner, []):
+            messagebox.showwarning("Existant", f"« {name} » existe déjà.",
+                                   parent=self)
+            return
+        self.clubs.setdefault(partner, []).append(name)
+        save_clubs(self.clubs)
+        if self.root_path.get():
+            os.makedirs(os.path.join(self.root_path.get(), partner, name),
+                        exist_ok=True)
+        self._refresh_opposing()
+        self.v_opposing.set(name)
+        self._log(f"Club adverse ajouté : {partner} / {name}")
+
+    def _rename_opposing(self):
+        partner = self.v_partner.get()
+        old     = self.v_opposing.get()
+        if not (partner and old):
+            return
+        new = self._ask_name("Renommer le club adverse", "Nouveau nom :", default=old)
+        if not new or new == old:
+            return
+        lst = self.clubs.get(partner, [])
+        if old in lst:
+            lst[lst.index(old)] = new
+        save_clubs(self.clubs)
+        if self.root_path.get():
+            src = os.path.join(self.root_path.get(), partner, old)
+            dst = os.path.join(self.root_path.get(), partner, new)
+            if os.path.isdir(src):
+                os.rename(src, dst)
+        self._refresh_opposing()
+        self.v_opposing.set(new)
+        self._log(f"Club adverse renommé : {old} → {new}")
+
+    def _del_opposing(self):
+        partner  = self.v_partner.get()
+        opposing = self.v_opposing.get()
+        if not (partner and opposing):
+            return
+        if not messagebox.askyesno("Supprimer",
+                f"Supprimer « {opposing} » ?\n"
+                "(Le dossier local n'est PAS supprimé.)", parent=self):
+            return
+        lst = self.clubs.get(partner, [])
+        if opposing in lst:
+            lst.remove(opposing)
+        save_clubs(self.clubs)
+        self._refresh_opposing()
+        self._log(f"Club adverse supprimé : {opposing}")
+
+    # ⑤ Tirage au sort
+    def _build_step5(self):
+        f = self._section("Tirage au sort avec vérification éligibilité", "⑤")
+        tk.Label(f,
+                 text="ℹ  Même vérification que le mode concert (joueurs bannis + "
+                      "gains récents < 6 mois). Les credentials Google sont requis "
+                      "en étape ③.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+        self.btn_draw = ColorButton(f, text="🎲   LANCER LE TIRAGE",
+                                     command=self._do_draw,
+                                     bg=C_RED, font_size=13)
+        self.btn_draw.pack(anchor="w", pady=(0, 12))
+
+        cols = ("nom", "prenom", "ville", "email", "telephone")
+        self.tree = ttk.Treeview(f, columns=cols, show="headings",
+                                  height=6, selectmode="browse")
+        for c, h, w in zip(cols,
+                           ["Nom", "Prénom", "Ville", "Email", "Téléphone"],
+                           [120, 110, 120, 200, 115]):
+            self.tree.heading(c, text=h)
+            self.tree.column(c, width=w, minwidth=50, anchor="w")
+        sb = ttk.Scrollbar(f, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        self.lbl_draw = tk.Label(f, text="", bg=C_WHITE, fg=C_GREEN, font=("", 10))
+        self.lbl_draw.pack(anchor="w", pady=(8, 0))
+
+    def _do_draw(self):
+        if not self.participants:
+            messagebox.showwarning("CSV manquant",
+                "Chargez d'abord un fichier CSV (étape ②).", parent=self)
+            return
+        n       = self.nb_winners.get()
+        nom_jeu = self.gv['nom_jeu'].get()
+
+        if not self.creds_path.get():
+            if not messagebox.askyesno("Sans vérification",
+                    "Aucun credentials Google — tirage sans vérification ?\n"
+                    "(Les éligibilités ne seront pas contrôlées.)", parent=self):
+                return
+            pool = [p for p in self.participants if p['email']]
+            self.winners = random.sample(pool, min(n, len(pool)))
+            self.winner_urls = {}
+            self._update_tree()
+            self.lbl_draw.config(
+                text=f"✓  {len(self.winners)} gagnant(s) (sans vérification)",
+                fg=C_GREEN)
+            return
+
+        if not GSPREAD_OK:
+            messagebox.showerror("Module manquant",
+                "pip install gspread google-auth", parent=self)
+            return
+
+        self.btn_draw.config(state=tk.DISABLED, text="⏳  Tirage en cours…")
+        self.lbl_draw.config(text="Vérification des éligibilités…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                draw_with_checks(
+                    self.participants, n,
+                    self.creds_path.get(), nom_jeu,
+                    log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                    done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
+                    error_cb = lambda m: self.after(0, lambda msg=m:
+                                   messagebox.showwarning("Tirage incomplet", msg,
+                                                          parent=self))
+                )
+            except Exception as e:
+                self.after(0, lambda: self.lbl_draw.config(
+                    text=f"✗  Erreur : {e}", fg=C_RED))
+                self.after(0, lambda: self.btn_draw.config(
+                    state=tk.NORMAL, text="🎲   LANCER LE TIRAGE"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _draw_done(self, winners):
+        self.winners     = winners
+        self.winner_urls = {}
+        self._update_tree()
+        self.btn_draw.config(state=tk.NORMAL, text="🎲   LANCER LE TIRAGE")
+        self.lbl_draw.config(
+            text=f"✓  {len(winners)} gagnant(s) validé(s)", fg=C_GREEN)
+        self._log(f"Tirage terminé : {len(winners)} gagnant(s).")
+
+    def _update_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        for w in self.winners:
+            self.tree.insert("", tk.END, values=(
+                w['nom'], w['prenom'], w.get('ville', ''),
+                w['email'], format_phone(w['phone'])
+            ))
+
+    # ⑥ Distribution des e-billets
+    def _build_step6(self):
+        f = self._section("Distribution des e-billets", "⑥")
+        tk.Label(f,
+                 text="Crée un sous-dossier par gagnant dans le dossier du club "
+                      "adverse et y déplace 2 e-billets. Placez au préalable les "
+                      "billets dans ce dossier.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+        self.btn_distrib = ColorButton(
+            f, text="📂   CRÉER LES DOSSIERS & DISTRIBUER LES BILLETS",
+            command=self._do_distribute,
+            bg=self.C_SPORT, font_size=11)
+        self.btn_distrib.pack(anchor="w", pady=(0, 6))
+        self.lbl_distrib = tk.Label(f, text="", bg=C_WHITE,
+                                     fg=C_GREEN, font=("", 10))
+        self.lbl_distrib.pack(anchor="w")
+
+    def _do_distribute(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage manquant",
+                "Effectuez d'abord le tirage (étape ⑤).", parent=self)
+            return
+        root     = self.root_path.get()
+        partner  = self.v_partner.get()
+        opposing = self.v_opposing.get()
+        base_url = self.base_url.get().strip()
+        if not root:
+            messagebox.showwarning("Dossier manquant",
+                "Définissez le dossier racine (étape ③).", parent=self)
+            return
+        if not (partner and opposing):
+            messagebox.showwarning("Clubs manquants",
+                "Sélectionnez club partenaire et club adverse (étape ④).",
+                parent=self)
+            return
+
+        tickets_dir = os.path.join(root, partner, opposing)
+        if not os.path.isdir(tickets_dir):
+            messagebox.showerror("Dossier introuvable",
+                f"Dossier introuvable :\n{tickets_dir}", parent=self)
+            return
+
+        tickets = self._list_tickets(tickets_dir)
+        needed  = len(self.winners) * 2
+        if len(tickets) < needed:
+            messagebox.showerror("E-billets insuffisants",
+                f"{needed} billets requis pour {len(self.winners)} gagnant(s), "
+                f"seulement {len(tickets)} trouvé(s) dans :\n{tickets_dir}",
+                parent=self)
+            return
+
+        if not messagebox.askyesno("Confirmation",
+                f"Créer {len(self.winners)} dossiers et déplacer "
+                f"{needed} e-billets ?\n\n"
+                f"Dossier : {tickets_dir}", parent=self):
+            return
+
+        errors = []
+        for i, winner in enumerate(self.winners):
+            folder_name = f"{winner['prenom']} {winner['nom']}"
+            winner_dir  = os.path.join(tickets_dir, folder_name)
+            try:
+                os.makedirs(winner_dir, exist_ok=True)
+                for j in range(2):
+                    ticket = tickets[i * 2 + j]
+                    shutil.move(os.path.join(tickets_dir, ticket),
+                                os.path.join(winner_dir, ticket))
+                url = make_dropbox_url(base_url, partner, opposing, folder_name) \
+                      if base_url else ""
+                self.winner_urls[winner['email']] = url
+                self._log(f"✓  {folder_name}"
+                          + (f" → {url}" if url else ""))
+            except Exception as e:
+                errors.append(folder_name)
+                self._log(f"✗  {folder_name} : {e}")
+
+        if errors:
+            self.lbl_distrib.config(
+                text=f"✗  {len(errors)} erreur(s) — voir journal", fg=C_RED)
+        else:
+            self.lbl_distrib.config(
+                text=f"✓  {len(self.winners)} dossiers créés, billets distribués",
+                fg=C_GREEN)
+
+    # ⑦ Modèle d'email & Envoi
+    def _build_step7(self):
+        f = self._section("Modèle d'email & Envoi", "⑦")
+        row = tk.Frame(f, bg=C_WHITE)
+        row.pack(fill=tk.X)
+        tk.Label(row, text="Modèle :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        self.tpl_var   = tk.StringVar()
+        self.tpl_combo = ttk.Combobox(row, textvariable=self.tpl_var,
+                                       state="readonly", width=34, font=("", 10))
+        self.tpl_combo.pack(side=tk.LEFT, padx=8)
+        self._refresh_templates()
+        tk.Label(f,
+                 text="Variable supplémentaire disponible : {lien_dropbox}",
+                 bg=C_WHITE, fg=C_GRAY, font=("", 9)).pack(anchor="w", pady=(4, 10))
+        row2 = tk.Frame(f, bg=C_WHITE)
+        row2.pack(fill=tk.X)
+        ColorButton(row2, text=f"📧  Test → {TEST_EMAIL}",
+                    command=self._send_test,
+                    bg=C_BLUE, font_size=10).pack(side=tk.LEFT, padx=(0, 10))
+        ColorButton(row2, text="🚀  Envoyer aux gagnants",
+                    command=self._send_all,
+                    bg=C_GREEN, font_size=10).pack(side=tk.LEFT)
+        self.lbl_send = tk.Label(f, text="", bg=C_WHITE,
+                                  fg=C_GREEN, font=("", 10))
+        self.lbl_send.pack(anchor="w", pady=(8, 0))
+
+    def _refresh_templates(self):
+        names = [t['name'] for t in self.templates]
+        self.tpl_combo['values'] = names
+        if names and not self.tpl_var.get():
+            self.tpl_var.set(names[0])
+
+    def _get_tpl(self):
+        name = self.tpl_var.get()
+        return next((t for t in self.templates if t['name'] == name), None)
+
+    def _variables(self, winner=None):
+        d = {k: v.get() for k, v in self.gv.items()}
+        if winner:
+            d["prenom"]       = winner['prenom']
+            d["nom"]          = winner['nom']
+            d["lien_dropbox"] = self.winner_urls.get(winner['email'], "")
+        else:
+            d["prenom"]       = "Pascal"
+            d["nom"]          = "Thomas"
+            d["lien_dropbox"] = "(lien dropbox)"
+        return d
+
+    def _send_test(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
+            return
+        v       = self._variables()
+        subject = apply_vars(tpl['subject'], v)
+        html    = apply_vars(tpl['html'],    v)
+        plain   = apply_vars(tpl['plain'],   v)
+        self.lbl_send.config(text="⏳  Envoi du test…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                send_smtp(TEST_EMAIL, subject, html, plain)
+                def ok():
+                    self.lbl_send.config(
+                        text=f"✓  Test envoyé à {TEST_EMAIL}", fg=C_GREEN)
+                    self._log(f"Test envoyé à {TEST_EMAIL}")
+                    messagebox.showinfo("Test envoyé",
+                        f"Mail de test envoyé à {TEST_EMAIL} !", parent=self)
+                self.after(0, ok)
+            except Exception as e:
+                err = str(e)
+                def ko():
+                    self.lbl_send.config(text=f"✗  Erreur SMTP : {err}", fg=C_RED)
+                    self._log(f"Erreur SMTP test : {err}")
+                    messagebox.showerror("Erreur SMTP", err, parent=self)
+                self.after(0, ko)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _send_all(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage", "Effectuez d'abord le tirage (⑤).",
+                                   parent=self)
+            return
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
+            return
+        if not self.winner_urls:
+            if not messagebox.askyesno("Liens manquants",
+                    "La distribution n'a pas encore été effectuée.\n"
+                    "Les {lien_dropbox} seront vides.\n\nContinuer ?",
+                    parent=self):
+                return
+        if not messagebox.askyesno("Confirmation",
+                f"Envoyer {len(self.winners)} email(s) aux gagnants ?",
+                parent=self):
+            return
+        self.lbl_send.config(text="⏳  Envoi en cours…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            ok_count, errs = 0, []
+            for w in self.winners:
+                if not w['email']:
+                    continue
+                v       = self._variables(winner=w)
+                subject = apply_vars(tpl['subject'], v)
+                html    = apply_vars(tpl['html'],    v)
+                plain   = apply_vars(tpl['plain'],   v)
+                try:
+                    send_smtp(w['email'], subject, html, plain)
+                    ok_count += 1
+                    ww = dict(w)
+                    self.after(0, lambda x=ww: self._log(
+                        f"✓  {x['prenom']} {x['nom']} → {x['email']}"))
+                except Exception as e:
+                    errs.append(w['email'])
+                    ww, ee = dict(w), str(e)
+                    self.after(0, lambda x=ww, err=ee: self._log(
+                        f"✗  {x['email']} : {err}"))
+            msg   = f"✓  {ok_count} email(s) envoyé(s)"
+            if errs:
+                msg += f"  —  {len(errs)} erreur(s)"
+            color = C_GREEN if not errs else C_RED
+            self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # Journal
+    def _build_log(self):
+        f = self._section("Journal", "📋")
+        self.log_widget = scrolledtext.ScrolledText(
+            f, height=8, wrap=tk.WORD,
+            bg="#1C1C1E", fg="#D4D4D4",
+            font=("Courier", 10), insertbackground=C_WHITE)
+        self.log_widget.pack(fill=tk.BOTH, expand=True)
+        self.log_widget.config(state=tk.DISABLED)
 
 
 # ══════════════════════════════════════════════════════════
