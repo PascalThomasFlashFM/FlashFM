@@ -1164,8 +1164,12 @@ class FlashFMApp(tk.Tk):
 
 
 # ══════════════════════════════════════════════════════════
-#  Clubs data (Sports variant)
+#  Clubs data & Dropbox utilities (Sports variant)
 # ══════════════════════════════════════════════════════════
+
+DEFAULT_ROOT       = "/Users/pascal/Dropbox/Billets"
+SPORTS_CONFIG_PATH = os.path.join(BASE_DIR, "flashfm_sports.json")
+
 
 def load_clubs():
     if os.path.exists(CLUBS_PATH):
@@ -1179,11 +1183,215 @@ def save_clubs(clubs):
         json.dump(clubs, f, ensure_ascii=False, indent=2)
 
 
-def make_dropbox_url(base_url, *path_parts):
-    """URL Dropbox d'un sous-dossier : lien racine + chemin relatif encodé."""
-    base   = base_url.strip().rstrip('/').split('?')[0]
-    suffix = '/'.join(quote(p, safe='') for p in path_parts)
-    return f"{base}/{suffix}"
+def load_sports_config():
+    if os.path.exists(SPORTS_CONFIG_PATH):
+        with open(SPORTS_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_sports_config(cfg):
+    with open(SPORTS_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def _get_dropbox_root():
+    """Lit ~/.dropbox/info.json pour détecter la racine locale Dropbox."""
+    for candidate in (
+        os.path.expanduser("~/.dropbox/info.json"),
+        os.path.expanduser("~/.dropbox/instance1/info.json"),
+    ):
+        try:
+            with open(candidate, encoding='utf-8') as f:
+                data = json.load(f)
+            return (data.get('personal', {}).get('path') or
+                    data.get('business', {}).get('path'))
+        except Exception:
+            pass
+    # Fallback : remonte le chemin racine pour trouver le dossier "Dropbox"
+    parts = os.path.normpath(DEFAULT_ROOT).split(os.sep)
+    for i, part in enumerate(parts):
+        if part.lower() == 'dropbox':
+            joined = os.sep.join(parts[:i + 1])
+            return joined if joined else os.sep
+    return None
+
+
+def local_to_dropbox_api_path(local_path):
+    """Convertit un chemin local en chemin API Dropbox (/Billets/xxx/...)."""
+    dbx_root = _get_dropbox_root()
+    if not dbx_root:
+        return None
+    try:
+        rel = os.path.relpath(local_path, dbx_root)
+        return '/' + rel.replace(os.sep, '/')
+    except ValueError:
+        return None
+
+
+def get_or_create_dropbox_link(token, api_path):
+    """Récupère ou crée un lien de partage public Dropbox pour un chemin."""
+    import urllib.request, urllib.error as _ue
+    hdrs = {'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'}
+
+    # 1. Chercher un lien existant
+    try:
+        req = urllib.request.Request(
+            'https://api.dropboxapi.com/2/sharing/list_shared_links',
+            data=json.dumps({'path': api_path, 'direct_only': True}).encode(),
+            headers=hdrs, method='POST')
+        with urllib.request.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+            if resp.get('links'):
+                return resp['links'][0]['url']
+    except Exception:
+        pass
+
+    # 2. Créer un nouveau lien public
+    try:
+        req = urllib.request.Request(
+            'https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings',
+            data=json.dumps({
+                'path': api_path,
+                'settings': {'requested_visibility': 'public'},
+            }).encode(),
+            headers=hdrs, method='POST')
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read()).get('url', '')
+    except _ue.HTTPError as e:
+        # Lien déjà créé → récupérer l'URL dans le corps d'erreur
+        try:
+            body = json.loads(e.read())
+            return body.get('error', {}).get('metadata', {}).get('url', '')
+        except Exception:
+            return ''
+    except Exception:
+        return ''
+
+
+# ── Google Sheets (sports) ────────────────────────────────
+
+def extract_sports_winners(all_vals):
+    """
+    Extrait les paires (nom, prenom) de tous les tableaux d'un onglet sport.
+    Ignore les lignes de titres et d'en-têtes.
+    """
+    SKIP = {'nom', 'prenom', 'prénom', 'ville', 'email', 'telephone',
+            'téléphone', 'lien', 'dropbox', 'lien dropbox', 'lien e-billet'}
+    winners = []
+    for row in all_vals:
+        nom    = row[0].strip() if len(row) > 0 else ''
+        prenom = row[1].strip() if len(row) > 1 else ''
+        if not nom or not prenom:
+            continue
+        if normalize(nom) in SKIP or normalize(prenom) in SKIP:
+            continue
+        winners.append((nom, prenom))
+    return winners
+
+
+def find_insert_row(all_vals):
+    """
+    Retourne la ligne (1-indexée) où commencer le prochain tableau :
+    2 lignes vides après la dernière cellule non-vide de la colonne A.
+    """
+    last = 0
+    for i, row in enumerate(all_vals):
+        if row and row[0].strip():
+            last = i + 1
+    return last + 3 if last else 1
+
+
+def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
+    """Ajoute un tableau de gagnants dans l'onglet sélectionné."""
+    all_vals  = ws.get_all_values()
+    start_row = find_insert_row(all_vals)
+
+    titre   = f"{nom_jeu}  –  {date}  –  {lieu}"
+    headers = ["Nom", "Prénom", "Ville", "Email", "Téléphone", "Lien e-billet"]
+    rows = (
+        [[titre, "", "", "", "", ""]]
+        + [headers]
+        + [
+            [w['nom'], w['prenom'], w.get('ville', ''),
+             w['email'], format_phone(w['phone']),
+             winner_urls.get(w['email'], '')]
+            for w in winners
+        ]
+    )
+    ws.update(values=rows,
+              range_name=f"A{start_row}:F{start_row + len(rows) - 1}")
+
+    sid = ws.id
+    ws.spreadsheet.batch_update({"requests": [
+        {"mergeCells": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row - 1,
+                      "endRowIndex":   start_row,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "mergeType": "MERGE_ALL"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row - 1,
+                      "endRowIndex":   start_row,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.10, "green": 0.29, "blue": 0.55},
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontSize": 12,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row,
+                      "endRowIndex":   start_row + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.13, "green": 0.24, "blue": 0.49},
+                "textFormat": {"bold": True,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
+    ]})
+    return start_row
+
+
+def sports_draw_with_checks(participants, n, creds_path, ws_name,
+                             log_cb, done_cb, error_cb):
+    """
+    Tirage au sort pour la variante sports.
+    Vérifie que le candidat n'a pas déjà gagné cette saison en lisant l'onglet sélectionné.
+    N'écrit rien dans Google Sheets (l'export est une étape séparée).
+    """
+    sh       = _sheets_client(creds_path)
+    ws       = sh.worksheet(ws_name)
+    all_vals = ws.get_all_values()
+    existing = extract_sports_winners(all_vals)
+    log_cb(f"Onglet « {ws_name} » : {len(existing)} gagnant(s) trouvé(s) cette saison.")
+
+    pool = [p for p in participants if p['email']]
+    random.shuffle(pool)
+    winners, excluded = [], 0
+
+    for candidate in pool:
+        if len(winners) >= n:
+            break
+        nom    = normalize(candidate['nom'])
+        prenom = normalize(candidate['prenom'])
+        already = any(normalize(en) == nom and normalize(ep) == prenom
+                      for en, ep in existing)
+        if already:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                   f" — déjà gagnant cette saison → remplacé")
+        else:
+            winners.append(candidate)
+            log_cb(f"✓  {candidate['prenom']} {candidate['nom']}")
+
+    if len(winners) < n:
+        error_cb(f"Seulement {len(winners)}/{n} gagnants éligibles "
+                 f"({excluded} déjà gagnant(s) cette saison).")
+    done_cb(winners)
 
 
 # ══════════════════════════════════════════════════════════
@@ -1196,19 +1404,20 @@ class SportsApp(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Flash FM – E-Billets Clubs Sportifs")
-        self.geometry("840x980")
-        self.minsize(700, 700)
+        self.geometry("840x1020")
+        self.minsize(700, 780)
         self.configure(bg=C_LIGHT)
         self.resizable(True, True)
 
+        cfg              = load_sports_config()
         self.clubs       = load_clubs()
         self.templates   = load_templates()
         self.participants = []
         self.winners     = []
-        self.winner_urls = {}        # {email: dropbox_url}
+        self.winner_urls = {}
         self.creds_path  = tk.StringVar()
-        self.root_path   = tk.StringVar()
-        self.base_url    = tk.StringVar()
+        self.v_tab_name  = tk.StringVar()
+        self.v_dbx_token = tk.StringVar(value=cfg.get('dropbox_token', ''))
 
         self._build_header()
         self._build_scroll_area()
@@ -1238,11 +1447,10 @@ class SportsApp(tk.Toplevel):
         canvas.bind("<Configure>",
             lambda e: canvas.itemconfig(win_id, width=e.width))
         canvas.bind_all("<MouseWheel>",
-            lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
+            lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
         self._build_steps()
         tk.Frame(self._inner, bg=C_LIGHT, height=24).pack()
 
-    # ── Helpers UI ────────────────────────────────────────
     def _section(self, title, number):
         outer = tk.Frame(self._inner, bg=C_LIGHT)
         outer.pack(fill=tk.X, padx=18, pady=(10, 2))
@@ -1264,7 +1472,6 @@ class SportsApp(tk.Toplevel):
         self.log_widget.see(tk.END)
         self.log_widget.config(state=tk.DISABLED)
 
-    # ── Construction des étapes ───────────────────────────
     def _build_steps(self):
         self._build_step1()
         self._build_step2()
@@ -1273,6 +1480,7 @@ class SportsApp(tk.Toplevel):
         self._build_step5()
         self._build_step6()
         self._build_step7()
+        self._build_step8()
         self._build_log()
 
     # ① Paramètres du match
@@ -1326,11 +1534,11 @@ class SportsApp(tk.Toplevel):
         except Exception as e:
             messagebox.showerror("Erreur CSV", str(e), parent=self)
 
-    # ③ Configuration Dropbox & Google
+    # ③ Configuration
     def _build_step3(self):
-        f = self._section("Configuration Dropbox & Google", "③")
+        f = self._section("Configuration Google Sheets & Dropbox", "③")
 
-        # Google credentials
+        # Credentials Google
         cr = tk.Frame(f, bg=C_WHITE)
         cr.pack(fill=tk.X, pady=(0, 8))
         tk.Label(cr, text="Credentials Google :", bg=C_WHITE,
@@ -1341,29 +1549,41 @@ class SportsApp(tk.Toplevel):
                                    bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
         self.lbl_creds.pack(side=tk.LEFT)
 
-        # Dossier racine local
-        dr = tk.Frame(f, bg=C_WHITE)
-        dr.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(dr, text="Dossier racine :", bg=C_WHITE,
+        # Onglet Google Sheets
+        tab_row = tk.Frame(f, bg=C_WHITE)
+        tab_row.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(tab_row, text="Onglet Sheets :", bg=C_WHITE,
                  font=("", 10)).pack(side=tk.LEFT)
-        ColorButton(dr, text="📁  Parcourir…", command=self._pick_root,
-                    bg="#555", font_size=9).pack(side=tk.LEFT, padx=8)
-        self.lbl_root = tk.Label(dr, text="Non défini",
-                                  bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
-        self.lbl_root.pack(side=tk.LEFT)
+        self.cb_tab = ttk.Combobox(tab_row, textvariable=self.v_tab_name,
+                                    state="readonly", width=28, font=("", 10))
+        self.cb_tab.pack(side=tk.LEFT, padx=8)
+        ColorButton(tab_row, text="⟳  Charger les onglets",
+                    command=self._load_tabs,
+                    bg=self.C_SPORT, font_size=9).pack(side=tk.LEFT)
 
-        # URL de partage Dropbox
-        du = tk.Frame(f, bg=C_WHITE)
-        du.pack(fill=tk.X)
-        tk.Label(du, text="Lien Dropbox partagé :", bg=C_WHITE,
-                 font=("", 10)).pack(side=tk.LEFT)
-        ttk.Entry(du, textvariable=self.base_url, width=46,
-                  font=("", 9)).pack(side=tk.LEFT, padx=8)
+        # Token Dropbox
+        sep = tk.Frame(f, bg=C_LGRAY, height=1)
+        sep.pack(fill=tk.X, pady=(4, 8))
+        tk.Label(f, text="Token API Dropbox :", bg=C_WHITE,
+                 font=("", 10)).pack(anchor="w")
+        dbx_row = tk.Frame(f, bg=C_WHITE)
+        dbx_row.pack(fill=tk.X, pady=(4, 2))
+        ttk.Entry(dbx_row, textvariable=self.v_dbx_token, width=52,
+                  show="*", font=("", 9)).pack(side=tk.LEFT)
+        ColorButton(dbx_row, text="💾  Sauvegarder",
+                    command=self._save_token,
+                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=8)
         tk.Label(f,
-                 text="Collez ici le lien de partage Dropbox du dossier racine "
-                      "(ex. https://www.dropbox.com/sh/xxxx/AAAyyy)",
+                 text="Créez un token sur https://www.dropbox.com/developers/apps "
+                      "→ Generated access token. Nécessaire pour obtenir les liens "
+                      "Dropbox automatiquement.",
                  bg=C_WHITE, fg=C_GRAY, font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+
+        # Dossier racine (affiché, non modifiable — hardcodé)
+        tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 4))
+        tk.Label(f, text=f"Dossier racine : {DEFAULT_ROOT}",
+                 bg=C_WHITE, fg=C_GRAY, font=("", 9, "italic")).pack(anchor="w")
 
     def _pick_creds(self):
         path = filedialog.askopenfilename(
@@ -1374,18 +1594,36 @@ class SportsApp(tk.Toplevel):
             self.lbl_creds.config(text=os.path.basename(path),
                                    fg=C_DARK, font=("", 10))
 
-    def _pick_root(self):
-        path = filedialog.askdirectory(title="Dossier racine Dropbox")
-        if path:
-            self.root_path.set(path)
-            self.lbl_root.config(text=path, fg=C_DARK, font=("", 10))
-            self._on_partner_change()
+    def _save_token(self):
+        cfg = load_sports_config()
+        cfg['dropbox_token'] = self.v_dbx_token.get().strip()
+        save_sports_config(cfg)
+        self._log("Token Dropbox sauvegardé.")
+
+    def _load_tabs(self):
+        if not self.creds_path.get():
+            messagebox.showwarning("Credentials manquants",
+                "Sélectionnez d'abord les credentials Google.", parent=self)
+            return
+        if not GSPREAD_OK:
+            messagebox.showerror("Module manquant",
+                "pip install gspread google-auth", parent=self)
+            return
+        try:
+            sh   = _sheets_client(self.creds_path.get())
+            tabs = [ws.title for ws in sh.worksheets()]
+            self.cb_tab['values'] = tabs
+            if tabs:
+                if self.v_tab_name.get() not in tabs:
+                    self.v_tab_name.set(tabs[0])
+            self._log(f"{len(tabs)} onglet(s) chargé(s).")
+        except Exception as e:
+            messagebox.showerror("Erreur Sheets", str(e), parent=self)
 
     # ④ Clubs partenaires & adversaires
     def _build_step4(self):
         f = self._section("Clubs partenaires & adversaires", "④")
 
-        # Club partenaire
         tk.Label(f, text="Club partenaire :", bg=C_WHITE,
                  font=("", 10, "bold")).pack(anchor="w")
         pr = tk.Frame(f, bg=C_WHITE)
@@ -1406,7 +1644,6 @@ class SportsApp(tk.Toplevel):
                                           fg=C_GRAY, font=("", 9, "italic"))
         self.lbl_partner_path.pack(anchor="w", pady=(2, 8))
 
-        # Club adverse
         tk.Label(f, text="Club adverse :", bg=C_WHITE,
                  font=("", 10, "bold")).pack(anchor="w")
         ar = tk.Frame(f, bg=C_WHITE)
@@ -1443,13 +1680,11 @@ class SportsApp(tk.Toplevel):
 
     def _on_partner_change(self):
         partner = self.v_partner.get()
-        root    = self.root_path.get()
-        if root and partner:
-            path = os.path.join(root, partner)
-            exists = os.path.isdir(path)
+        if partner:
+            path = os.path.join(DEFAULT_ROOT, partner)
             self.lbl_partner_path.config(
                 text=f"📁  {path}",
-                fg=C_DARK if exists else C_RED)
+                fg=C_DARK if os.path.isdir(path) else C_RED)
         else:
             self.lbl_partner_path.config(text="")
         self._refresh_opposing()
@@ -1466,25 +1701,23 @@ class SportsApp(tk.Toplevel):
         self._update_tickets_count()
 
     def _update_tickets_count(self):
-        root     = self.root_path.get()
         partner  = self.v_partner.get()
         opposing = self.v_opposing.get()
-        if not (root and partner and opposing):
+        if not (partner and opposing):
             self.lbl_opposing_path.config(text="")
             self.lbl_tickets_found.config(text="")
             return
-        path = os.path.join(root, partner, opposing)
-        exists = os.path.isdir(path)
+        path = os.path.join(DEFAULT_ROOT, partner, opposing)
         self.lbl_opposing_path.config(
             text=f"📁  {path}",
-            fg=C_DARK if exists else C_RED)
-        if exists:
-            n     = len(self._list_tickets(path))
-            need  = self.nb_winners.get() * 2
-            color = C_GREEN if n >= need else C_RED
+            fg=C_DARK if os.path.isdir(path) else C_RED)
+        if os.path.isdir(path):
+            n    = len(self._list_tickets(path))
+            need = self.nb_winners.get() * 2
             self.lbl_tickets_found.config(
                 text=f"{'✓' if n >= need else '⚠'}  {n} e-billet(s) disponible(s)"
-                     f"  (besoin : {need})", fg=color)
+                     f"  (besoin : {need})",
+                fg=C_GREEN if n >= need else C_RED)
         else:
             self.lbl_tickets_found.config(text="⚠  Dossier non trouvé", fg=C_RED)
 
@@ -1536,8 +1769,7 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs[name] = []
         save_clubs(self.clubs)
-        if self.root_path.get():
-            os.makedirs(os.path.join(self.root_path.get(), name), exist_ok=True)
+        os.makedirs(os.path.join(DEFAULT_ROOT, name), exist_ok=True)
         self.v_partner.set(name)
         self._refresh_partners()
         self._log(f"Club partenaire ajouté : {name}")
@@ -1551,21 +1783,20 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs[new] = self.clubs.pop(old)
         save_clubs(self.clubs)
-        if self.root_path.get():
-            src = os.path.join(self.root_path.get(), old)
-            dst = os.path.join(self.root_path.get(), new)
-            if os.path.isdir(src):
-                os.rename(src, dst)
+        src = os.path.join(DEFAULT_ROOT, old)
+        dst = os.path.join(DEFAULT_ROOT, new)
+        if os.path.isdir(src):
+            os.rename(src, dst)
         self.v_partner.set(new)
         self._refresh_partners()
-        self._log(f"Club renommé : {old} → {new}")
+        self._log(f"Club partenaire renommé : {old} → {new}")
 
     def _del_partner(self):
         name = self.v_partner.get()
         if not name:
             return
         if not messagebox.askyesno("Supprimer",
-                f"Supprimer le club partenaire « {name} » ?\n"
+                f"Supprimer le club « {name} » ?\n"
                 "(Le dossier local n'est PAS supprimé.)", parent=self):
             return
         self.clubs.pop(name, None)
@@ -1588,12 +1819,11 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs.setdefault(partner, []).append(name)
         save_clubs(self.clubs)
-        if self.root_path.get():
-            os.makedirs(os.path.join(self.root_path.get(), partner, name),
-                        exist_ok=True)
+        folder = os.path.join(DEFAULT_ROOT, partner, name)
+        os.makedirs(folder, exist_ok=True)
         self._refresh_opposing()
         self.v_opposing.set(name)
-        self._log(f"Club adverse ajouté : {partner} / {name}")
+        self._log(f"Club adverse ajouté : {partner} / {name} — dossier créé")
 
     def _rename_opposing(self):
         partner = self.v_partner.get()
@@ -1607,11 +1837,10 @@ class SportsApp(tk.Toplevel):
         if old in lst:
             lst[lst.index(old)] = new
         save_clubs(self.clubs)
-        if self.root_path.get():
-            src = os.path.join(self.root_path.get(), partner, old)
-            dst = os.path.join(self.root_path.get(), partner, new)
-            if os.path.isdir(src):
-                os.rename(src, dst)
+        src = os.path.join(DEFAULT_ROOT, partner, old)
+        dst = os.path.join(DEFAULT_ROOT, partner, new)
+        if os.path.isdir(src):
+            os.rename(src, dst)
         self._refresh_opposing()
         self.v_opposing.set(new)
         self._log(f"Club adverse renommé : {old} → {new}")
@@ -1634,13 +1863,14 @@ class SportsApp(tk.Toplevel):
 
     # ⑤ Tirage au sort
     def _build_step5(self):
-        f = self._section("Tirage au sort avec vérification éligibilité", "⑤")
+        f = self._section("Tirage au sort — vérification saison", "⑤")
         tk.Label(f,
-                 text="ℹ  Même vérification que le mode concert (joueurs bannis + "
-                      "gains récents < 6 mois). Les credentials Google sont requis "
-                      "en étape ③.",
+                 text="ℹ  Vérifie que chaque candidat n'a pas déjà gagné cette "
+                      "saison en lisant l'onglet Google Sheets sélectionné en ③. "
+                      "Les gagnants ne sont PAS écrits dans « liste des gagnants ».",
                  bg=C_WHITE, fg="#666", font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+
         self.btn_draw = ColorButton(f, text="🎲   LANCER LE TIRAGE",
                                      command=self._do_draw,
                                      bg=C_RED, font_size=13)
@@ -1666,16 +1896,15 @@ class SportsApp(tk.Toplevel):
             messagebox.showwarning("CSV manquant",
                 "Chargez d'abord un fichier CSV (étape ②).", parent=self)
             return
-        n       = self.nb_winners.get()
-        nom_jeu = self.gv['nom_jeu'].get()
+        n = self.nb_winners.get()
 
-        if not self.creds_path.get():
+        if not self.creds_path.get() or not self.v_tab_name.get():
             if not messagebox.askyesno("Sans vérification",
-                    "Aucun credentials Google — tirage sans vérification ?\n"
-                    "(Les éligibilités ne seront pas contrôlées.)", parent=self):
+                    "Credentials Google ou onglet non configurés.\n"
+                    "Tirage simple sans vérification de la saison ?", parent=self):
                 return
             pool = [p for p in self.participants if p['email']]
-            self.winners = random.sample(pool, min(n, len(pool)))
+            self.winners     = random.sample(pool, min(n, len(pool)))
             self.winner_urls = {}
             self._update_tree()
             self.lbl_draw.config(
@@ -1689,14 +1918,14 @@ class SportsApp(tk.Toplevel):
             return
 
         self.btn_draw.config(state=tk.DISABLED, text="⏳  Tirage en cours…")
-        self.lbl_draw.config(text="Vérification des éligibilités…", fg=C_GRAY)
+        self.lbl_draw.config(text="Lecture de l'onglet…", fg=C_GRAY)
         self.update()
 
         def run():
             try:
-                draw_with_checks(
+                sports_draw_with_checks(
                     self.participants, n,
-                    self.creds_path.get(), nom_jeu,
+                    self.creds_path.get(), self.v_tab_name.get(),
                     log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
                     error_cb = lambda m: self.after(0, lambda msg=m:
@@ -1732,9 +1961,8 @@ class SportsApp(tk.Toplevel):
     def _build_step6(self):
         f = self._section("Distribution des e-billets", "⑥")
         tk.Label(f,
-                 text="Crée un sous-dossier par gagnant dans le dossier du club "
-                      "adverse et y déplace 2 e-billets. Placez au préalable les "
-                      "billets dans ce dossier.",
+                 text="Crée un sous-dossier par gagnant, déplace 2 e-billets et "
+                      "récupère automatiquement le lien Dropbox via l'API.",
                  bg=C_WHITE, fg="#666", font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
         self.btn_distrib = ColorButton(
@@ -1751,21 +1979,16 @@ class SportsApp(tk.Toplevel):
             messagebox.showwarning("Tirage manquant",
                 "Effectuez d'abord le tirage (étape ⑤).", parent=self)
             return
-        root     = self.root_path.get()
         partner  = self.v_partner.get()
         opposing = self.v_opposing.get()
-        base_url = self.base_url.get().strip()
-        if not root:
-            messagebox.showwarning("Dossier manquant",
-                "Définissez le dossier racine (étape ③).", parent=self)
-            return
+        token    = self.v_dbx_token.get().strip()
         if not (partner and opposing):
             messagebox.showwarning("Clubs manquants",
                 "Sélectionnez club partenaire et club adverse (étape ④).",
                 parent=self)
             return
 
-        tickets_dir = os.path.join(root, partner, opposing)
+        tickets_dir = os.path.join(DEFAULT_ROOT, partner, opposing)
         if not os.path.isdir(tickets_dir):
             messagebox.showerror("Dossier introuvable",
                 f"Dossier introuvable :\n{tickets_dir}", parent=self)
@@ -1782,40 +2005,114 @@ class SportsApp(tk.Toplevel):
 
         if not messagebox.askyesno("Confirmation",
                 f"Créer {len(self.winners)} dossiers et déplacer "
-                f"{needed} e-billets ?\n\n"
-                f"Dossier : {tickets_dir}", parent=self):
+                f"{needed} e-billets ?\n\nDossier : {tickets_dir}", parent=self):
             return
 
-        errors = []
-        for i, winner in enumerate(self.winners):
-            folder_name = f"{winner['prenom']} {winner['nom']}"
-            winner_dir  = os.path.join(tickets_dir, folder_name)
-            try:
-                os.makedirs(winner_dir, exist_ok=True)
-                for j in range(2):
-                    ticket = tickets[i * 2 + j]
-                    shutil.move(os.path.join(tickets_dir, ticket),
-                                os.path.join(winner_dir, ticket))
-                url = make_dropbox_url(base_url, partner, opposing, folder_name) \
-                      if base_url else ""
-                self.winner_urls[winner['email']] = url
-                self._log(f"✓  {folder_name}"
-                          + (f" → {url}" if url else ""))
-            except Exception as e:
-                errors.append(folder_name)
-                self._log(f"✗  {folder_name} : {e}")
+        self.btn_distrib.config(state=tk.DISABLED, text="⏳  Distribution…")
+        self.lbl_distrib.config(text="Distribution en cours…", fg=C_GRAY)
+        self.update()
 
-        if errors:
-            self.lbl_distrib.config(
-                text=f"✗  {len(errors)} erreur(s) — voir journal", fg=C_RED)
-        else:
-            self.lbl_distrib.config(
-                text=f"✓  {len(self.winners)} dossiers créés, billets distribués",
-                fg=C_GREEN)
+        def run():
+            errors = []
+            for i, winner in enumerate(self.winners):
+                folder_name = f"{winner['prenom']} {winner['nom']}"
+                winner_dir  = os.path.join(tickets_dir, folder_name)
+                try:
+                    os.makedirs(winner_dir, exist_ok=True)
+                    for j in range(2):
+                        shutil.move(
+                            os.path.join(tickets_dir, tickets[i * 2 + j]),
+                            os.path.join(winner_dir,  tickets[i * 2 + j]))
+                    # Récupération du lien Dropbox
+                    url = ''
+                    if token:
+                        api_path = local_to_dropbox_api_path(winner_dir)
+                        if api_path:
+                            url = get_or_create_dropbox_link(token, api_path)
+                    self.winner_urls[winner['email']] = url
+                    msg = f"✓  {folder_name}"
+                    if url:
+                        msg += f" → {url}"
+                    elif token:
+                        msg += " (lien Dropbox non récupéré)"
+                    self.after(0, lambda m=msg: self._log(m))
+                except Exception as e:
+                    errors.append(folder_name)
+                    self.after(0, lambda m=f"✗  {folder_name} : {e}": self._log(m))
 
-    # ⑦ Modèle d'email & Envoi
+            def finish():
+                self.btn_distrib.config(state=tk.NORMAL,
+                    text="📂   CRÉER LES DOSSIERS & DISTRIBUER LES BILLETS")
+                if errors:
+                    self.lbl_distrib.config(
+                        text=f"✗  {len(errors)} erreur(s) — voir journal", fg=C_RED)
+                else:
+                    self.lbl_distrib.config(
+                        text=f"✓  {len(self.winners)} dossier(s) créé(s), "
+                             f"billets distribués", fg=C_GREEN)
+            self.after(0, finish)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ⑦ Export Google Sheets
     def _build_step7(self):
-        f = self._section("Modèle d'email & Envoi", "⑦")
+        f = self._section("Export vers Google Sheets", "⑦")
+        tk.Label(f,
+                 text="Ajoute le tableau des gagnants dans l'onglet sélectionné en ③, "
+                      "à la suite des tableaux existants.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+        ColorButton(f, text="📊   EXPORTER VERS GOOGLE SHEETS",
+                    command=self._do_export_sheet,
+                    bg="#1A6B35", font_size=11).pack(anchor="w", pady=(0, 6))
+        self.lbl_sheets = tk.Label(f, text="", bg=C_WHITE,
+                                    fg=C_GREEN, font=("", 10))
+        self.lbl_sheets.pack(anchor="w")
+
+    def _do_export_sheet(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage manquant",
+                "Effectuez d'abord le tirage (étape ⑤).", parent=self)
+            return
+        if not self.creds_path.get() or not self.v_tab_name.get():
+            messagebox.showwarning("Configuration manquante",
+                "Configurez les credentials et l'onglet (étape ③).", parent=self)
+            return
+        if not GSPREAD_OK:
+            messagebox.showerror("Module manquant",
+                "pip install gspread google-auth", parent=self)
+            return
+
+        self.lbl_sheets.config(text="⏳  Export en cours…", fg=C_GRAY)
+        self.update()
+
+        nom_jeu = self.gv['nom_jeu'].get()
+        date    = self.gv['date'].get()
+        lieu    = self.gv['lieu'].get()
+        tab     = self.v_tab_name.get()
+
+        def run():
+            try:
+                sh  = _sheets_client(self.creds_path.get())
+                ws  = sh.worksheet(tab)
+                row = sports_export_to_sheet(
+                    ws, self.winners, nom_jeu, date, lieu, self.winner_urls)
+                self.after(0, lambda: self.lbl_sheets.config(
+                    text=f"✓  Tableau ajouté dans « {tab} » à partir de la ligne {row}",
+                    fg=C_GREEN))
+                self.after(0, lambda: self._log(
+                    f"Sheets : tableau exporté dans « {tab} » (ligne {row})"))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: self.lbl_sheets.config(
+                    text=f"✗  Erreur : {err}", fg=C_RED))
+                self.after(0, lambda: self._log(f"Erreur export Sheets : {err}"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ⑧ Modèle d'email & Envoi
+    def _build_step8(self):
+        f = self._section("Modèle d'email & Envoi", "⑧")
         row = tk.Frame(f, bg=C_WHITE)
         row.pack(fill=tk.X)
         tk.Label(row, text="Modèle :", bg=C_WHITE,
@@ -1855,7 +2152,7 @@ class SportsApp(tk.Toplevel):
         if winner:
             d["prenom"]       = winner['prenom']
             d["nom"]          = winner['nom']
-            d["lien_dropbox"] = self.winner_urls.get(winner['email'], "")
+            d["lien_dropbox"] = self.winner_urls.get(winner['email'], '')
         else:
             d["prenom"]       = "Pascal"
             d["nom"]          = "Thomas"
@@ -1888,7 +2185,7 @@ class SportsApp(tk.Toplevel):
                 err = str(e)
                 def ko():
                     self.lbl_send.config(text=f"✗  Erreur SMTP : {err}", fg=C_RED)
-                    self._log(f"Erreur SMTP test : {err}")
+                    self._log(f"Erreur SMTP : {err}")
                     messagebox.showerror("Erreur SMTP", err, parent=self)
                 self.after(0, ko)
 
@@ -1903,12 +2200,11 @@ class SportsApp(tk.Toplevel):
         if not tpl:
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
             return
-        if not self.winner_urls:
-            if not messagebox.askyesno("Liens manquants",
-                    "La distribution n'a pas encore été effectuée.\n"
-                    "Les {lien_dropbox} seront vides.\n\nContinuer ?",
-                    parent=self):
-                return
+        if not self.winner_urls and not messagebox.askyesno(
+                "Liens manquants",
+                "La distribution n'a pas encore été effectuée.\n"
+                "{lien_dropbox} sera vide. Continuer ?", parent=self):
+            return
         if not messagebox.askyesno("Confirmation",
                 f"Envoyer {len(self.winners)} email(s) aux gagnants ?",
                 parent=self):
@@ -1939,8 +2235,8 @@ class SportsApp(tk.Toplevel):
             msg   = f"✓  {ok_count} email(s) envoyé(s)"
             if errs:
                 msg += f"  —  {len(errs)} erreur(s)"
-            color = C_GREEN if not errs else C_RED
-            self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
+            self.after(0, lambda: self.lbl_send.config(
+                text=msg, fg=C_GREEN if not errs else C_RED))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1954,8 +2250,6 @@ class SportsApp(tk.Toplevel):
         self.log_widget.pack(fill=tk.BOTH, expand=True)
         self.log_widget.config(state=tk.DISABLED)
 
-
-# ══════════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = FlashFMApp()
     app.mainloop()
