@@ -1241,16 +1241,13 @@ def local_to_dropbox_api_path(local_path):
     dbx_root = _get_dropbox_root()
     if not dbx_root:
         return None
-    try:
-        # realpath résout la casse réelle du filesystem (macOS insensible à la casse)
-        real_local = os.path.realpath(local_path)
-        real_root  = os.path.realpath(dbx_root)
-        rel = os.path.relpath(real_local, real_root)
-        if rel.startswith('..'):
-            return None
-        return '/' + rel.replace(os.sep, '/')
-    except ValueError:
-        return None
+    norm_local = os.path.normpath(local_path)
+    norm_root  = os.path.normpath(dbx_root)
+    # Comparaison insensible à la casse (macOS case-insensitive)
+    if norm_local.lower().startswith(norm_root.lower() + os.sep.lower()):
+        rel = norm_local[len(norm_root):]  # garde la casse réelle
+        return rel.replace(os.sep, '/')    # commence déjà par '/'
+    return None
 
 
 def get_or_create_dropbox_link(token, api_path):
