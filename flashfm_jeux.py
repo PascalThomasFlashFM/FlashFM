@@ -9,7 +9,7 @@ Nécessite : pip install gspread google-auth
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import json, os, csv, io, re, random, smtplib, threading, unicodedata, shutil
+import json, os, csv, io, re, random, smtplib, threading, unicodedata, shutil, time
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -2092,13 +2092,22 @@ class SportsApp(tk.Toplevel):
                 url = ''
                 if token:
                     try:
-                        dbx_root = _get_dropbox_root()
                         api_path = local_to_dropbox_api_path(winner_dir)
-                        self.after(0, lambda m=f"   🔍 Dropbox root={dbx_root!r}  api_path={api_path!r}": self._log(m))
                         if api_path:
-                            url = get_or_create_dropbox_link(token, api_path)
-                            self.after(0, lambda m=f"   🔗 {folder_name} → {url}": self._log(m))
+                            # Retry jusqu'à 5 fois (Dropbox peut prendre du temps à synchroniser)
+                            for attempt in range(1, 6):
+                                try:
+                                    url = get_or_create_dropbox_link(token, api_path)
+                                    self.after(0, lambda m=f"   🔗 {folder_name} → {url}": self._log(m))
+                                    break
+                                except RuntimeError as e_retry:
+                                    if 'not_found' in str(e_retry) and attempt < 5:
+                                        self.after(0, lambda m=f"   ⏳ Dropbox sync en cours, tentative {attempt}/5…": self._log(m))
+                                        time.sleep(4)
+                                    else:
+                                        raise
                         else:
+                            dbx_root = _get_dropbox_root()
                             self.after(0, lambda m=f"   ⚠ {folder_name} : chemin Dropbox introuvable (root={dbx_root!r})": self._log(m))
                     except Exception as e_dbx:
                         self.after(0, lambda m=f"   ✗ Dropbox {folder_name} : {e_dbx}": self._log(m))
