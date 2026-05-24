@@ -1352,65 +1352,71 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
     ws.update(values=rows,
               range_name=f"A{start_row}:F{start_row + len(rows) - 1}")
 
-    sid = ws.id
+    sid    = ws.id
+    n_data = len(winners)
+    _NAVY  = {"red": 0.098, "green": 0.235, "blue": 0.467}   # #192F77 – titre
+    _BLUE  = {"red": 0.180, "green": 0.380, "blue": 0.671}   # #2E61AB – en-têtes
+    _GRAY  = {"red": 0.750, "green": 0.750, "blue": 0.750}   # bordures données
+    _WHITE = {"red": 1.0,   "green": 1.0,   "blue": 1.0}
+    _ALT   = {"red": 0.898, "green": 0.937, "blue": 0.988}   # bleu très pâle
+
+    def _border(color, w=1):
+        s = {"style": "SOLID", "width": w, "color": color}
+        return {"top": s, "bottom": s, "left": s, "right": s}
+
     ws.spreadsheet.batch_update({"requests": [
+        # ── Titre ──────────────────────────────────────────────────────────
         {"mergeCells": {
             "range": {"sheetId": sid,
-                      "startRowIndex": start_row - 1,
-                      "endRowIndex":   start_row,
+                      "startRowIndex": start_row - 1, "endRowIndex": start_row,
                       "startColumnIndex": 0, "endColumnIndex": 6},
             "mergeType": "MERGE_ALL"}},
         {"repeatCell": {
             "range": {"sheetId": sid,
-                      "startRowIndex": start_row - 1,
-                      "endRowIndex":   start_row,
+                      "startRowIndex": start_row - 1, "endRowIndex": start_row,
                       "startColumnIndex": 0, "endColumnIndex": 6},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 0.10, "green": 0.29, "blue": 0.55},
+                "backgroundColor": _NAVY,
                 "horizontalAlignment": "CENTER",
-                "textFormat": {"bold": True, "fontSize": 12,
-                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
-            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+                "verticalAlignment": "MIDDLE",
+                "textFormat": {"bold": True, "fontSize": 12, "foregroundColor": _WHITE}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"}},
+        # ── En-têtes ───────────────────────────────────────────────────────
         {"repeatCell": {
             "range": {"sheetId": sid,
-                      "startRowIndex": start_row,
-                      "endRowIndex":   start_row + 1,
+                      "startRowIndex": start_row, "endRowIndex": start_row + 1,
                       "startColumnIndex": 0, "endColumnIndex": 6},
             "cell": {"userEnteredFormat": {
-                "backgroundColor": {"red": 0.13, "green": 0.24, "blue": 0.49},
+                "backgroundColor": _BLUE,
                 "horizontalAlignment": "CENTER",
-                "textFormat": {"bold": True,
-                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
-            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
-        # Lignes de données : centrage + bordures
+                "verticalAlignment": "MIDDLE",
+                "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": _WHITE},
+                "borders": _border(_NAVY, 2)}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat,borders)"}},
+        # ── Données : alignement + bordures (sans couleur de fond = laissé au banding) ─
         {"repeatCell": {
             "range": {"sheetId": sid,
-                      "startRowIndex": start_row + 1,
-                      "endRowIndex":   start_row + len(winners),
+                      "startRowIndex": start_row + 1, "endRowIndex": start_row + 1 + n_data,
                       "startColumnIndex": 0, "endColumnIndex": 6},
             "cell": {"userEnteredFormat": {
                 "horizontalAlignment": "CENTER",
-                "borders": {
-                    "top":    {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
-                    "bottom": {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
-                    "left":   {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
-                    "right":  {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}}
-                }}},
-            "fields": "userEnteredFormat(horizontalAlignment,borders)"}},
-        # Bordures sur la ligne d'en-têtes aussi
-        {"repeatCell": {
-            "range": {"sheetId": sid,
-                      "startRowIndex": start_row,
-                      "endRowIndex":   start_row + 1,
-                      "startColumnIndex": 0, "endColumnIndex": 6},
-            "cell": {"userEnteredFormat": {
-                "borders": {
-                    "top":    {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
-                    "bottom": {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
-                    "left":   {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
-                    "right":  {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}}
-                }}},
-            "fields": "userEnteredFormat(borders)"}},
+                "verticalAlignment": "MIDDLE",
+                "textFormat": {"fontSize": 10},
+                "borders": _border(_GRAY)}},
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat,borders)"}},
+        # ── Lignes alternées blanc / bleu pâle ────────────────────────────
+        {"addBanding": {
+            "bandedRange": {
+                "range": {"sheetId": sid,
+                          "startRowIndex": start_row + 1, "endRowIndex": start_row + 1 + n_data,
+                          "startColumnIndex": 0, "endColumnIndex": 6},
+                "rowProperties": {
+                    "firstBandColorStyle":  {"rgbColor": _WHITE},
+                    "secondBandColorStyle": {"rgbColor": _ALT}}}}},
+        # ── Redimensionner colonnes A–E automatiquement (F = lien, largeur libre) ─
+        {"autoResizeDimensions": {
+            "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
+                           "startIndex": 0, "endIndex": 5}}},
     ]})
     return start_row
 
