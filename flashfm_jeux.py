@@ -1249,44 +1249,55 @@ def local_to_dropbox_api_path(local_path):
 
 
 def get_or_create_dropbox_link(token, api_path):
-    """Récupère ou crée un lien de partage public Dropbox pour un chemin."""
+    """
+    Récupère ou crée un lien de partage public Dropbox.
+    Lève une exception avec un message clair en cas d'échec.
+    """
     import urllib.request, urllib.error as _ue
+
     hdrs = {'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'}
 
-    # 1. Chercher un lien existant
-    try:
+    def _call(endpoint, payload):
         req = urllib.request.Request(
-            'https://api.dropboxapi.com/2/sharing/list_shared_links',
-            data=json.dumps({'path': api_path, 'direct_only': True}).encode(),
+            f'https://api.dropboxapi.com/2/{endpoint}',
+            data=json.dumps(payload).encode(),
             headers=hdrs, method='POST')
-        with urllib.request.urlopen(req, timeout=15) as r:
-            resp = json.loads(r.read())
-            if resp.get('links'):
-                return resp['links'][0]['url']
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read())
 
-    # 2. Créer un nouveau lien public
+    # 1. Lien existant ?
     try:
-        req = urllib.request.Request(
-            'https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings',
-            data=json.dumps({
-                'path': api_path,
-                'settings': {'requested_visibility': 'public'},
-            }).encode(),
-            headers=hdrs, method='POST')
-        with urllib.request.urlopen(req, timeout=15) as r:
-            return json.loads(r.read()).get('url', '')
+        resp = _call('sharing/list_shared_links',
+                     {'path': api_path, 'direct_only': True})
+        if resp.get('links'):
+            return resp['links'][0]['url']
     except _ue.HTTPError as e:
-        # Lien déjà créé → récupérer l'URL dans le corps d'erreur
-        try:
-            body = json.loads(e.read())
-            return body.get('error', {}).get('metadata', {}).get('url', '')
-        except Exception:
-            return ''
-    except Exception:
-        return ''
+        body_txt = e.read().decode(errors='replace')
+        raise RuntimeError(f"list_shared_links HTTP {e.code} : {body_txt}") from None
+
+    # 2. Créer un nouveau lien
+    try:
+        resp = _call('sharing/create_shared_link_with_settings',
+                     {'path': api_path,
+                      'settings': {'requested_visibility': 'public'}})
+        return resp.get('url', '')
+    except _ue.HTTPError as e:
+        body_txt = e.read().decode(errors='replace')
+        # 409 = lien déjà créé → récupérer via list_shared_links
+        if e.code == 409:
+            try:
+                resp = _call('sharing/list_shared_links',
+                             {'path': api_path, 'direct_only': True})
+                if resp.get('links'):
+                    return resp['links'][0]['url']
+            except Exception as inner:
+                raise RuntimeError(
+                    f"Lien existant mais non récupérable : {inner}") from None
+            raise RuntimeError(
+                f"Lien existant mais liste vide pour {api_path}") from None
+        raise RuntimeError(
+            f"create_shared_link HTTP {e.code} : {body_txt}") from None
 
 
 # ── Google Sheets (sports) ────────────────────────────────
@@ -1368,9 +1379,39 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
                       "startColumnIndex": 0, "endColumnIndex": 6},
             "cell": {"userEnteredFormat": {
                 "backgroundColor": {"red": 0.13, "green": 0.24, "blue": 0.49},
+                "horizontalAlignment": "CENTER",
                 "textFormat": {"bold": True,
                                "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
-            "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+        # Lignes de données : centrage + bordures
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row + 1,
+                      "endRowIndex":   start_row + len(winners),
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER",
+                "borders": {
+                    "top":    {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
+                    "bottom": {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
+                    "left":   {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}},
+                    "right":  {"style": "SOLID", "width": 1, "color": {"red": 0.6, "green": 0.6, "blue": 0.6}}
+                }}},
+            "fields": "userEnteredFormat(horizontalAlignment,borders)"}},
+        # Bordures sur la ligne d'en-têtes aussi
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row,
+                      "endRowIndex":   start_row + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "borders": {
+                    "top":    {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
+                    "bottom": {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
+                    "left":   {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}},
+                    "right":  {"style": "SOLID", "width": 2, "color": {"red": 0.08, "green": 0.20, "blue": 0.45}}
+                }}},
+            "fields": "userEnteredFormat(borders)"}},
     ]})
     return start_row
 
@@ -2042,22 +2083,25 @@ class SportsApp(tk.Toplevel):
                         shutil.move(
                             os.path.join(tickets_dir, tickets[i * 2 + j]),
                             os.path.join(winner_dir,  tickets[i * 2 + j]))
-                    # Récupération du lien Dropbox
-                    url = ''
-                    if token:
-                        api_path = local_to_dropbox_api_path(winner_dir)
-                        if api_path:
-                            url = get_or_create_dropbox_link(token, api_path)
-                    self.winner_urls[winner['email']] = url
-                    msg = f"✓  {folder_name}"
-                    if url:
-                        msg += f" → {url}"
-                    elif token:
-                        msg += " (lien Dropbox non récupéré)"
-                    self.after(0, lambda m=msg: self._log(m))
+                    self.after(0, lambda m=f"✓  {folder_name} — billets déplacés": self._log(m))
                 except Exception as e:
                     errors.append(folder_name)
                     self.after(0, lambda m=f"✗  {folder_name} : {e}": self._log(m))
+                    continue
+
+                # Récupération du lien Dropbox (étape séparée — n'annule pas le déplacement)
+                url = ''
+                if token:
+                    try:
+                        api_path = local_to_dropbox_api_path(winner_dir)
+                        if api_path:
+                            url = get_or_create_dropbox_link(token, api_path)
+                            self.after(0, lambda m=f"   🔗 {folder_name} → {url}": self._log(m))
+                        else:
+                            self.after(0, lambda m=f"   ⚠ {folder_name} : chemin Dropbox introuvable": self._log(m))
+                    except Exception as e_dbx:
+                        self.after(0, lambda m=f"   ✗ Dropbox {folder_name} : {e_dbx}": self._log(m))
+                self.winner_urls[winner['email']] = url
 
             def finish():
                 self.btn_distrib.config(state=tk.NORMAL,
