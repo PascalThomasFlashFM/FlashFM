@@ -2090,12 +2090,14 @@ class SportsApp(tk.Toplevel):
                 url = ''
                 if token:
                     try:
+                        dbx_root = _get_dropbox_root()
                         api_path = local_to_dropbox_api_path(winner_dir)
+                        self.after(0, lambda m=f"   🔍 Dropbox root={dbx_root!r}  api_path={api_path!r}": self._log(m))
                         if api_path:
                             url = get_or_create_dropbox_link(token, api_path)
                             self.after(0, lambda m=f"   🔗 {folder_name} → {url}": self._log(m))
                         else:
-                            self.after(0, lambda m=f"   ⚠ {folder_name} : chemin Dropbox introuvable": self._log(m))
+                            self.after(0, lambda m=f"   ⚠ {folder_name} : chemin Dropbox introuvable (root={dbx_root!r})": self._log(m))
                     except Exception as e_dbx:
                         self.after(0, lambda m=f"   ✗ Dropbox {folder_name} : {e_dbx}": self._log(m))
                 self.winner_urls[winner['email']] = url
