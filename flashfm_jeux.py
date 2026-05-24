@@ -1271,17 +1271,7 @@ def get_or_create_dropbox_link(token, api_path):
         with urllib.request.urlopen(req, timeout=20, context=_ssl_ctx) as r:
             return json.loads(r.read())
 
-    # 1. Lien existant ?
-    try:
-        resp = _call('sharing/list_shared_links',
-                     {'path': api_path, 'direct_only': True})
-        if resp.get('links'):
-            return resp['links'][0]['url']
-    except _ue.HTTPError as e:
-        body_txt = e.read().decode(errors='replace')
-        raise RuntimeError(f"list_shared_links HTTP {e.code} : {body_txt}") from None
-
-    # 2. Créer un nouveau lien
+    # Créer le lien directement ; si 409 = lien déjà existant, l'URL est dans le corps de l'erreur
     try:
         resp = _call('sharing/create_shared_link_with_settings',
                      {'path': api_path,
@@ -1289,18 +1279,20 @@ def get_or_create_dropbox_link(token, api_path):
         return resp.get('url', '')
     except _ue.HTTPError as e:
         body_txt = e.read().decode(errors='replace')
-        # 409 = lien déjà créé → récupérer via list_shared_links
         if e.code == 409:
+            # Dropbox inclut l'URL existante dans le corps de la réponse 409
             try:
-                resp = _call('sharing/list_shared_links',
-                             {'path': api_path, 'direct_only': True})
-                if resp.get('links'):
-                    return resp['links'][0]['url']
-            except Exception as inner:
-                raise RuntimeError(
-                    f"Lien existant mais non récupérable : {inner}") from None
+                err_body = json.loads(body_txt)
+                url = (err_body.get('error', {})
+                               .get('shared_link_already_exists', {})
+                               .get('metadata', {})
+                               .get('url', ''))
+                if url:
+                    return url
+            except Exception:
+                pass
             raise RuntimeError(
-                f"Lien existant mais liste vide pour {api_path}") from None
+                f"Lien déjà existant mais URL introuvable dans la réponse : {body_txt}") from None
         raise RuntimeError(
             f"create_shared_link HTTP {e.code} : {body_txt}") from None
 
