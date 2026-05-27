@@ -1214,6 +1214,57 @@ def save_sports_config(cfg):
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
+# ── OAuth Dropbox (refresh token permanent) ──────────────────────────────────
+
+def dropbox_get_auth_url(app_key):
+    """Retourne l'URL d'autorisation OAuth2 Dropbox (offline = refresh token)."""
+    return (f"https://www.dropbox.com/oauth2/authorize"
+            f"?client_id={app_key}&response_type=code&token_access_type=offline")
+
+
+def dropbox_exchange_code(app_key, app_secret, code):
+    """Échange le code d'autorisation contre access_token + refresh_token."""
+    import urllib.request, urllib.parse, urllib.error as _ue, base64, ssl
+    _ssl_ctx = ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
+    credentials = base64.b64encode(f"{app_key}:{app_secret}".encode()).decode()
+    data = urllib.parse.urlencode({
+        'code': code.strip(),
+        'grant_type': 'authorization_code',
+    }).encode()
+    req = urllib.request.Request(
+        'https://api.dropbox.com/oauth2/token',
+        data=data,
+        headers={'Authorization': f'Basic {credentials}',
+                 'Content-Type': 'application/x-www-form-urlencoded'},
+        method='POST')
+    with urllib.request.urlopen(req, timeout=20, context=_ssl_ctx) as r:
+        return json.loads(r.read())
+
+
+def dropbox_refresh_access_token(app_key, app_secret, refresh_token):
+    """Obtient un nouvel access token à partir du refresh token (ne expire pas)."""
+    import urllib.request, urllib.parse, urllib.error as _ue, base64, ssl
+    _ssl_ctx = ssl.create_default_context()
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
+    credentials = base64.b64encode(f"{app_key}:{app_secret}".encode()).decode()
+    data = urllib.parse.urlencode({
+        'refresh_token': refresh_token,
+        'grant_type': 'refresh_token',
+    }).encode()
+    req = urllib.request.Request(
+        'https://api.dropbox.com/oauth2/token',
+        data=data,
+        headers={'Authorization': f'Basic {credentials}',
+                 'Content-Type': 'application/x-www-form-urlencoded'},
+        method='POST')
+    with urllib.request.urlopen(req, timeout=20, context=_ssl_ctx) as r:
+        resp = json.loads(r.read())
+    return resp['access_token']
+
+
 def _get_dropbox_root():
     """Lit ~/.dropbox/info.json pour détecter la racine locale Dropbox."""
     for candidate in (
@@ -1482,7 +1533,9 @@ class SportsApp(tk.Toplevel):
         self.winner_urls = {}
         self.creds_path  = tk.StringVar()
         self.v_tab_name  = tk.StringVar()
-        self.v_dbx_token = tk.StringVar(value=cfg.get('dropbox_token', ''))
+        self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
+        self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
+        self.v_dbx_refresh = tk.StringVar(value=cfg.get('dropbox_refresh_token', ''))
 
         self._build_header()
         self._build_scroll_area()
@@ -1626,24 +1679,52 @@ class SportsApp(tk.Toplevel):
                     command=self._load_tabs,
                     bg=self.C_SPORT, font_size=9).pack(side=tk.LEFT)
 
-        # Token Dropbox
+        # Connexion Dropbox (OAuth2 permanent)
         sep = tk.Frame(f, bg=C_LGRAY, height=1)
         sep.pack(fill=tk.X, pady=(4, 8))
-        tk.Label(f, text="Token API Dropbox :", bg=C_WHITE,
-                 font=("", 10)).pack(anchor="w")
-        dbx_row = tk.Frame(f, bg=C_WHITE)
-        dbx_row.pack(fill=tk.X, pady=(4, 2))
-        ttk.Entry(dbx_row, textvariable=self.v_dbx_token, width=52,
-                  show="*", font=("", 9)).pack(side=tk.LEFT)
-        ColorButton(dbx_row, text="💾  Sauvegarder",
-                    command=self._save_token,
-                    bg="#444", font_size=9).pack(side=tk.LEFT, padx=8)
+        tk.Label(f, text="Connexion Dropbox (token permanent) :",
+                 bg=C_WHITE, font=("", 10, "bold")).pack(anchor="w")
         tk.Label(f,
-                 text="Créez un token sur https://www.dropbox.com/developers/apps "
-                      "→ Generated access token. Nécessaire pour obtenir les liens "
-                      "Dropbox automatiquement.",
+                 text="Sur https://www.dropbox.com/developers/apps → votre app → "
+                      "onglet Settings → copiez App key et App secret.",
                  bg=C_WHITE, fg=C_GRAY, font=("", 9),
-                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(2, 0))
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(2, 6))
+
+        row_key = tk.Frame(f, bg=C_WHITE)
+        row_key.pack(fill=tk.X, pady=2)
+        tk.Label(row_key, text="App key :", bg=C_WHITE, width=12,
+                 anchor="w", font=("", 10)).pack(side=tk.LEFT)
+        ttk.Entry(row_key, textvariable=self.v_dbx_key,
+                  width=36, font=("", 9)).pack(side=tk.LEFT)
+
+        row_sec = tk.Frame(f, bg=C_WHITE)
+        row_sec.pack(fill=tk.X, pady=2)
+        tk.Label(row_sec, text="App secret :", bg=C_WHITE, width=12,
+                 anchor="w", font=("", 10)).pack(side=tk.LEFT)
+        ttk.Entry(row_sec, textvariable=self.v_dbx_secret,
+                  width=36, show="*", font=("", 9)).pack(side=tk.LEFT)
+
+        row_auth = tk.Frame(f, bg=C_WHITE)
+        row_auth.pack(fill=tk.X, pady=(6, 2))
+        ColorButton(row_auth, text="🌐  Étape 1 : Ouvrir l'autorisation Dropbox",
+                    command=self._dbx_open_auth,
+                    bg=self.C_SPORT, font_size=9).pack(side=tk.LEFT)
+
+        row_code = tk.Frame(f, bg=C_WHITE)
+        row_code.pack(fill=tk.X, pady=2)
+        tk.Label(row_code, text="Code obtenu :", bg=C_WHITE, width=14,
+                 anchor="w", font=("", 10)).pack(side=tk.LEFT)
+        self.v_dbx_code = tk.StringVar()
+        ttk.Entry(row_code, textvariable=self.v_dbx_code,
+                  width=34, font=("", 9)).pack(side=tk.LEFT)
+        ColorButton(row_code, text="✅  Étape 2 : Valider",
+                    command=self._dbx_validate_code,
+                    bg="#2e7d32", font_size=9).pack(side=tk.LEFT, padx=8)
+
+        self.lbl_dbx_status = tk.Label(f, text="", bg=C_WHITE,
+                                        font=("", 9, "italic"))
+        self.lbl_dbx_status.pack(anchor="w", pady=(2, 0))
+        self._dbx_refresh_status()
 
         # Dossier racine (affiché, non modifiable — hardcodé)
         tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 4))
@@ -1659,11 +1740,66 @@ class SportsApp(tk.Toplevel):
             self.lbl_creds.config(text=os.path.basename(path),
                                    fg=C_DARK, font=("", 10))
 
-    def _save_token(self):
+    def _dbx_refresh_status(self):
+        """Met à jour le label de statut Dropbox."""
+        rt = self.v_dbx_refresh.get().strip()
+        if rt:
+            self.lbl_dbx_status.config(
+                text="✅  Connexion Dropbox configurée (token permanent actif).",
+                fg=C_GREEN)
+        else:
+            self.lbl_dbx_status.config(
+                text="⚠  Pas encore autorisé — suivez les étapes ci-dessus.",
+                fg="#e65100")
+
+    def _dbx_open_auth(self):
+        app_key = self.v_dbx_key.get().strip()
+        if not app_key:
+            messagebox.showwarning("App key manquante",
+                "Saisissez l'App key Dropbox avant de continuer.", parent=self)
+            return
+        import webbrowser
+        url = dropbox_get_auth_url(app_key)
+        webbrowser.open(url)
+        self._log("Navigateur ouvert → autorisez l'application puis collez le code.")
+
+    def _dbx_validate_code(self):
+        app_key    = self.v_dbx_key.get().strip()
+        app_secret = self.v_dbx_secret.get().strip()
+        code       = self.v_dbx_code.get().strip()
+        if not (app_key and app_secret and code):
+            messagebox.showwarning("Champs manquants",
+                "App key, App secret et code sont requis.", parent=self)
+            return
+        try:
+            resp = dropbox_exchange_code(app_key, app_secret, code)
+        except Exception as e:
+            messagebox.showerror("Erreur OAuth", str(e), parent=self)
+            return
+        refresh_token = resp.get('refresh_token', '')
+        if not refresh_token:
+            messagebox.showerror("Erreur OAuth",
+                f"Pas de refresh_token dans la réponse :\n{resp}", parent=self)
+            return
+        self.v_dbx_refresh.set(refresh_token)
         cfg = load_sports_config()
-        cfg['dropbox_token'] = self.v_dbx_token.get().strip()
+        cfg['dropbox_app_key']      = app_key
+        cfg['dropbox_app_secret']   = app_secret
+        cfg['dropbox_refresh_token'] = refresh_token
+        cfg.pop('dropbox_token', None)
         save_sports_config(cfg)
-        self._log("Token Dropbox sauvegardé.")
+        self.v_dbx_code.set('')
+        self._dbx_refresh_status()
+        self._log("✅  Token permanent Dropbox enregistré. Plus besoin de renouveler.")
+
+    def _get_dropbox_access_token(self):
+        """Retourne un access token frais à partir du refresh token."""
+        key     = self.v_dbx_key.get().strip()
+        secret  = self.v_dbx_secret.get().strip()
+        refresh = self.v_dbx_refresh.get().strip()
+        if not (key and secret and refresh):
+            return None
+        return dropbox_refresh_access_token(key, secret, refresh)
 
     def _load_tabs(self):
         if not self.creds_path.get():
@@ -2046,7 +2182,7 @@ class SportsApp(tk.Toplevel):
             return
         partner  = self.v_partner.get()
         opposing = self.v_opposing.get()
-        token    = self.v_dbx_token.get().strip()
+        token    = self._get_dropbox_access_token()
         if not (partner and opposing):
             messagebox.showwarning("Clubs manquants",
                 "Sélectionnez club partenaire et club adverse (étape ④).",
