@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hit Flash FM — Générateur de classement HTML</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d0d0d;
+      color: #f0f0f0;
+      min-height: 100vh;
+    }
+
+    header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      padding: 24px 32px;
+      border-bottom: 2px solid #e94560;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    header h1 {
+      margin: 0;
+      font-size: 1.6rem;
+      color: #fff;
+      letter-spacing: 1px;
+    }
+
+    header span.badge {
+      background: #e94560;
+      color: #fff;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px 24px;
+    }
+
+    .step {
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+      transition: border-color 0.3s;
+    }
+
+    .step.active { border-color: #e94560; }
+    .step.done { border-color: #28a745; }
+
+    .step-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .step-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #2a2a2a;
+      color: #888;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      flex-shrink: 0;
+    }
+
+    .step.active .step-num { background: #e94560; color: #fff; }
+    .step.done .step-num { background: #28a745; color: #fff; }
+
+    .step-title {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #ccc;
+    }
+
+    .step.active .step-title { color: #fff; }
+
+    label.file-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: #e94560;
+      color: #fff;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.9rem;
+      transition: background 0.2s;
+    }
+
+    label.file-label:hover { background: #c73652; }
+
+    input[type="file"] { display: none; }
+
+    select {
+      background: #2a2a2a;
+      color: #f0f0f0;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      min-width: 300px;
+      cursor: pointer;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    select:hover, select:focus { border-color: #e94560; }
+
+    .file-info {
+      margin-top: 12px;
+      font-size: 0.85rem;
+      color: #888;
+    }
+
+    .file-info strong { color: #28a745; }
+
+    /* Preview table */
+    .preview-wrap {
+      overflow-x: auto;
+      margin-top: 16px;
+      border: 1px solid #2a2a2a;
+      border-radius: 8px;
+    }
+
+    .preview-wrap table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.85rem;
+    }
+
+    .preview-wrap th {
+      background: #1f1f2e;
+      color: #e94560;
+      padding: 8px 12px;
+      text-align: left;
+      font-weight: 600;
+      border-bottom: 1px solid #333;
+      white-space: nowrap;
+    }
+
+    .preview-wrap td {
+      padding: 7px 12px;
+      border-bottom: 1px solid #222;
+      color: #ddd;
+      white-space: nowrap;
+    }
+
+    .preview-wrap tr:last-child td { border-bottom: none; }
+    .preview-wrap tr:hover td { background: #1f1f1f; }
+
+    /* Output area */
+    .output-section { margin-top: 8px; }
+
+    .output-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: #e94560;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 18px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: #c73652; }
+    button.secondary {
+      background: #2a2a2a;
+      border: 1px solid #444;
+    }
+    button.secondary:hover { background: #3a3a3a; }
+
+    .copy-status {
+      font-size: 0.85rem;
+      color: #28a745;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    .copy-status.show { opacity: 1; }
+
+    textarea#htmlOutput {
+      width: 100%;
+      height: 300px;
+      background: #111;
+      color: #a8d8a8;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      resize: vertical;
+      outline: none;
+    }
+
+    /* Rendered preview */
+    #renderedPreview {
+      background: #fff;
+      color: #000;
+      border-radius: 8px;
+      padding: 16px;
+      margin-top: 16px;
+      overflow-x: auto;
+    }
+
+    #renderedPreview table {
+      border-collapse: collapse;
+      width: 100%;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+
+    #renderedPreview th {
+      background: #1a1a2e;
+      color: #fff;
+      padding: 8px 12px;
+      text-align: left;
+      border: 1px solid #ccc;
+    }
+
+    #renderedPreview td {
+      padding: 7px 12px;
+      border: 1px solid #ccc;
+    }
+
+    #renderedPreview tr:nth-child(even) td { background: #f5f5f5; }
+
+    .hidden { display: none; }
+
+    .toggle-btn {
+      font-size: 0.8rem;
+    }
+
+    .hint {
+      font-size: 0.8rem;
+      color: #666;
+      margin-top: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Hit Flash FM</h1>
+  <span class="badge">Générateur HTML</span>
+</header>
+
+<div class="container">
+
+  <!-- Étape 1 : sélection du fichier -->
+  <div class="step active" id="step1">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">Sélectionner le fichier Excel (.xlsx / .xls)</div>
+    </div>
+    <label class="file-label" for="fileInput">
+      📂 Choisir un fichier
+    </label>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.ods">
+    <div class="file-info" id="fileInfo"></div>
+  </div>
+
+  <!-- Étape 2 : sélection de l'onglet -->
+  <div class="step" id="step2">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">Sélectionner l'onglet (feuille)</div>
+    </div>
+    <select id="sheetSelect" disabled>
+      <option value="">— Charger un fichier d'abord —</option>
+    </select>
+    <p class="hint">Les onglets disponibles dans le fichier apparaîtront ici.</p>
+  </div>
+
+  <!-- Étape 3 : résultat -->
+  <div class="step" id="step3">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">Aperçu du tableau et génération HTML</div>
+    </div>
+
+    <div id="previewSection" class="hidden">
+      <div class="preview-wrap" id="previewWrap"></div>
+
+      <div class="output-section" style="margin-top:24px;">
+        <div class="output-toolbar">
+          <button id="copyBtn">📋 Copier le HTML</button>
+          <button class="secondary toggle-btn" id="toggleRender">👁 Aperçu rendu</button>
+          <span class="copy-status" id="copyStatus">✅ Copié !</span>
+        </div>
+        <textarea id="htmlOutput" readonly placeholder="Le code HTML apparaîtra ici…"></textarea>
+        <div id="renderedPreview" class="hidden"></div>
+      </div>
+    </div>
+    <div id="step3Placeholder" class="hint">Sélectionnez un onglet pour générer le tableau.</div>
+  </div>
+
+</div>
+
+<script>
+  let workbook = null;
+
+  const fileInput    = document.getElementById('fileInput');
+  const fileInfo     = document.getElementById('fileInfo');
+  const sheetSelect  = document.getElementById('sheetSelect');
+  const step1        = document.getElementById('step1');
+  const step2        = document.getElementById('step2');
+  const step3        = document.getElementById('step3');
+  const previewSec   = document.getElementById('previewSection');
+  const step3ph      = document.getElementById('step3Placeholder');
+  const previewWrap  = document.getElementById('previewWrap');
+  const htmlOutput   = document.getElementById('htmlOutput');
+  const copyBtn      = document.getElementById('copyBtn');
+  const copyStatus   = document.getElementById('copyStatus');
+  const toggleRender = document.getElementById('toggleRender');
+  const rendered     = document.getElementById('renderedPreview');
+
+  // ─── Chargement du fichier ───────────────────────────────────────────────
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const data = new Uint8Array(ev.target.result);
+      workbook = XLSX.read(data, { type: 'array', cellStyles: true, cellDates: true });
+
+      // Afficher les onglets
+      sheetSelect.innerHTML = '<option value="">— Choisir un onglet —</option>';
+      workbook.SheetNames.forEach(name => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sheetSelect.appendChild(opt);
+      });
+      sheetSelect.disabled = false;
+
+      fileInfo.innerHTML = `Fichier chargé : <strong>${file.name}</strong> — ${workbook.SheetNames.length} onglet(s) trouvé(s).`;
+
+      step1.classList.remove('active');
+      step1.classList.add('done');
+      step2.classList.add('active');
+
+      // Réinitialiser l'étape 3
+      previewSec.classList.add('hidden');
+      step3ph.classList.remove('hidden');
+      step3.classList.remove('active', 'done');
+      rendered.classList.add('hidden');
+    };
+    reader.readAsArrayBuffer(file);
+  });
+
+  // ─── Sélection de l'onglet ───────────────────────────────────────────────
+  sheetSelect.addEventListener('change', () => {
+    const name = sheetSelect.value;
+    if (!name || !workbook) return;
+
+    step2.classList.remove('active');
+    step2.classList.add('done');
+    step3.classList.add('active');
+
+    const sheet = workbook.Sheets[name];
+    const rows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+
+    // Filtrer les lignes vides en fin de tableau
+    const cleanRows = trimTrailingEmpty(rows);
+
+    renderPreview(cleanRows);
+    const html = generateHTML(cleanRows, name);
+    htmlOutput.value = html;
+    rendered.innerHTML = html;
+
+    previewSec.classList.remove('hidden');
+    step3ph.classList.add('hidden');
+  });
+
+  // ─── Utilitaires ─────────────────────────────────────────────────────────
+
+  function trimTrailingEmpty(rows) {
+    let last = rows.length - 1;
+    while (last >= 0 && rows[last].every(c => c === '' || c === null || c === undefined)) {
+      last--;
+    }
+    return rows.slice(0, last + 1);
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Nombre de colonnes max dans le tableau
+  function maxCols(rows) {
+    return rows.reduce((m, r) => Math.max(m, r.length), 0);
+  }
+
+  function renderPreview(rows) {
+    const cols = maxCols(rows);
+    let html = '<table>';
+    rows.forEach((row, i) => {
+      html += '<tr>';
+      for (let c = 0; c < cols; c++) {
+        const val = escapeHtml(row[c] ?? '');
+        if (i === 0) {
+          html += `<th>${val}</th>`;
+        } else {
+          html += `<td>${val}</td>`;
+        }
+      }
+      html += '</tr>';
+    });
+    html += '</table>';
+    previewWrap.innerHTML = html;
+  }
+
+  function generateHTML(rows, sheetName) {
+    const cols = maxCols(rows);
+    const lines = [];
+
+    lines.push(`<!-- Classement Hit Flash FM — Onglet : ${escapeHtml(sheetName)} -->`);
+    lines.push('<table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;">');
+
+    rows.forEach((row, i) => {
+      if (i === 0) {
+        // Première ligne = en-tête
+        lines.push('  <thead>');
+        lines.push('    <tr>');
+        for (let c = 0; c < cols; c++) {
+          const val = escapeHtml(row[c] ?? '');
+          lines.push(`      <th style="background:#1a1a2e;color:#fff;padding:8px 12px;text-align:left;border:1px solid #ccc;">${val}</th>`);
+        }
+        lines.push('    </tr>');
+        lines.push('  </thead>');
+        lines.push('  <tbody>');
+      } else {
+        const bg = (i % 2 === 0) ? '#f5f5f5' : '#ffffff';
+        lines.push(`    <tr style="background:${bg};">`);
+        for (let c = 0; c < cols; c++) {
+          const val = escapeHtml(row[c] ?? '');
+          lines.push(`      <td style="padding:7px 12px;border:1px solid #ccc;">${val}</td>`);
+        }
+        lines.push('    </tr>');
+      }
+    });
+
+    lines.push('  </tbody>');
+    lines.push('</table>');
+
+    return lines.join('\n');
+  }
+
+  // ─── Copier le HTML ───────────────────────────────────────────────────────
+  copyBtn.addEventListener('click', () => {
+    if (!htmlOutput.value) return;
+    navigator.clipboard.writeText(htmlOutput.value).then(() => {
+      copyStatus.classList.add('show');
+      setTimeout(() => copyStatus.classList.remove('show'), 2500);
+    }).catch(() => {
+      // Fallback
+      htmlOutput.select();
+      document.execCommand('copy');
+      copyStatus.classList.add('show');
+      setTimeout(() => copyStatus.classList.remove('show'), 2500);
+    });
+  });
+
+  // ─── Basculer l'aperçu rendu ──────────────────────────────────────────────
+  toggleRender.addEventListener('click', () => {
+    if (rendered.classList.contains('hidden')) {
+      rendered.classList.remove('hidden');
+      toggleRender.textContent = '🙈 Masquer l\'aperçu';
+    } else {
+      rendered.classList.add('hidden');
+      toggleRender.textContent = '👁 Aperçu rendu';
+    }
+  });
+</script>
+
+</body>
+</html>
