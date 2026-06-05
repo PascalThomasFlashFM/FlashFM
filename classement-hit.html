@@ -296,12 +296,21 @@ function generateHTML({ meta, headers, sections }) {
 
   /* ── Bloc métadonnées ── */
   if (meta.length) {
+    // Séparer les valeurs qui ressemblent à une date des autres
+    const isDate = v => /\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(v) || /\d{4}[\/\-.]\d{1,2}/.test(v);
     L.push(`<div style="font-family:'Segoe UI',Arial,sans-serif;margin-bottom:16px;display:inline-block;">`);
     L.push(`  <div style="background:linear-gradient(135deg,#1a1a2e 0%,#0f3460 100%);`);
-    L.push(`    border-radius:10px;padding:14px 22px;display:flex;flex-wrap:wrap;gap:18px;align-items:center;">`);
+    L.push(`    border-radius:10px;padding:14px 22px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;">`);
     meta.forEach(v => {
-      L.push(`    <span style="color:#ffd700;font-family:'Segoe UI',Arial,sans-serif;`);
-      L.push(`      font-size:1rem;font-weight:700;white-space:nowrap;">${esc(v)}</span>`);
+      if (isDate(v)) {
+        // Date : badge accent bien visible
+        L.push(`    <span style="font-family:'Segoe UI',Arial,sans-serif;background:#e94560;`);
+        L.push(`      color:#fff;font-size:0.95rem;font-weight:700;white-space:nowrap;`);
+        L.push(`      padding:5px 14px;border-radius:20px;letter-spacing:0.5px;">${esc(v)}</span>`);
+      } else {
+        L.push(`    <span style="color:#ffd700;font-family:'Segoe UI',Arial,sans-serif;`);
+        L.push(`      font-size:1rem;font-weight:700;white-space:nowrap;">${esc(v)}</span>`);
+      }
     });
     L.push(`  </div>`);
     L.push(`</div>`);
@@ -316,15 +325,16 @@ function generateHTML({ meta, headers, sections }) {
 
   /* En-tête */
   L.push(`  <thead>`);
-  L.push(`    <tr>`);
+  L.push(`    <tr style="background:#1a1a2e;">`);
   headers.forEach((h, i) => {
-    // Première colonne (rang) : centrée et plus étroite
     const isRank = i === 0;
-    L.push(`      <th style="background:linear-gradient(135deg,#e94560,#c0392b);`);
-    L.push(`        color:#fff;padding:11px ${isRank ? '10px' : '16px'};`);
+    L.push(`      <th style="background:#1a1a2e;color:#ffd700;`);
+    L.push(`        padding:12px ${isRank ? '10px' : '18px'};`);
     L.push(`        text-align:${isRank ? 'center' : 'left'};font-size:12px;`);
-    L.push(`        font-weight:700;text-transform:uppercase;letter-spacing:0.8px;`);
-    L.push(`        white-space:nowrap;border-bottom:3px solid #a93226;">${esc(h)}</th>`);
+    L.push(`        font-weight:800;text-transform:uppercase;letter-spacing:1px;`);
+    L.push(`        white-space:nowrap;`);
+    L.push(`        border-bottom:3px solid #e94560;`);
+    L.push(`        border-right:1px solid #2e2e4e;">${esc(h)}</th>`);
   });
   L.push(`    </tr>`);
   L.push(`  </thead>`);
@@ -351,13 +361,24 @@ function generateHTML({ meta, headers, sections }) {
       rowIdx++;
       L.push(`    <tr style="background:${bg};" onmouseover="this.style.background='${hov}'" onmouseout="this.style.background='${bg}'">`);
       row.forEach((cell, ci) => {
-        const isRank = ci === 0 && /^\d+$/.test(cell);
-        if (isRank) {
-          L.push(`      <td style="padding:9px 10px;border-bottom:1px solid #dce4f5;`);
+        const border = 'border-bottom:1px solid #dce4f5;border-right:1px solid #eaeffa;';
+        // Colonne 0 : numéro de rang
+        if (ci === 0 && /^\d+$/.test(cell)) {
+          L.push(`      <td style="padding:9px 10px;${border}`);
           L.push(`        text-align:center;font-weight:800;font-size:16px;`);
           L.push(`        color:#e94560;width:42px;white-space:nowrap;">${esc(cell)}</td>`);
+        // Colonne 1 : statut E / RE → badge rouge fond rouge texte blanc
+        } else if (ci === 1 && /^(E|RE)$/i.test(cell.trim())) {
+          L.push(`      <td style="padding:9px 10px;${border}text-align:center;white-space:nowrap;">`);
+          L.push(`        <span style="display:inline-block;background:#e94560;color:#fff;`);
+          L.push(`          font-weight:700;font-size:11px;padding:2px 8px;border-radius:12px;`);
+          L.push(`          letter-spacing:0.5px;text-transform:uppercase;">${esc(cell.trim())}</span>`);
+          L.push(`      </td>`);
+        // Colonne 2 : interprète → gras
+        } else if (ci === 2) {
+          L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;font-weight:700;white-space:nowrap;">${esc(cell)}</td>`);
         } else {
-          L.push(`      <td style="padding:9px 16px;border-bottom:1px solid #dce4f5;color:#1a1a2e;white-space:nowrap;">${esc(cell)}</td>`);
+          L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;white-space:nowrap;">${esc(cell)}</td>`);
         }
       });
       L.push(`    </tr>`);
