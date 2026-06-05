@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hit Flash FM — Générateur de classement HTML</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #0d0d0d;
+      color: #f0f0f0;
+      min-height: 100vh;
+    }
+    header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      padding: 20px 28px;
+      border-bottom: 3px solid #e94560;
+      display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; color: #fff; letter-spacing: 1px; }
+    header .badge {
+      background: #e94560; color: #fff; font-size: 0.62rem;
+      font-weight: 700; padding: 3px 8px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .container { max-width: 1000px; margin: 0 auto; padding: 24px 18px; }
+
+    .step {
+      background: #1a1a1a; border: 1px solid #2a2a2a;
+      border-radius: 10px; padding: 20px; margin-bottom: 16px;
+    }
+    .step.active { border-color: #e94560; }
+    .step.done   { border-color: #28a745; }
+    .step-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .step-num {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: #2a2a2a; color: #888;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.82rem; flex-shrink: 0;
+    }
+    .step.active .step-num { background: #e94560; color: #fff; }
+    .step.done   .step-num { background: #28a745; color: #fff; }
+    .step-title { font-size: 0.95rem; font-weight: 600; color: #ccc; }
+    .step.active .step-title, .step.done .step-title { color: #fff; }
+
+    label.file-label {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: #e94560; color: #fff; padding: 9px 18px;
+      border-radius: 6px; cursor: pointer; font-weight: 600;
+      font-size: 0.87rem; transition: background 0.2s;
+    }
+    label.file-label:hover { background: #c73652; }
+    input[type="file"] { display: none; }
+
+    select {
+      background: #2a2a2a; color: #f0f0f0; border: 1px solid #444;
+      border-radius: 6px; padding: 9px 12px; font-size: 0.9rem;
+      min-width: 260px; cursor: pointer; outline: none;
+    }
+    select:focus { border-color: #e94560; }
+
+    .file-info { margin-top: 10px; font-size: 0.8rem; color: #888; }
+    .file-info strong { color: #28a745; }
+    .hint { font-size: 0.77rem; color: #555; margin-top: 6px; margin-bottom: 0; }
+
+    /* App preview table (dark) */
+    .preview-wrap { overflow-x: auto; margin-top: 12px; border: 1px solid #2a2a2a; border-radius: 8px; }
+    .preview-wrap table { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+    .preview-wrap th {
+      background: #1f1f2e; color: #e94560; padding: 7px 10px;
+      text-align: left; font-weight: 700; border-bottom: 1px solid #333;
+      white-space: nowrap; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.4px;
+    }
+    .preview-wrap td { padding: 6px 10px; border-bottom: 1px solid #222; color: #ddd; white-space: nowrap; }
+    .preview-wrap tr:last-child td { border-bottom: none; }
+    .preview-wrap tr:hover td { background: #1f1f1f; }
+    .preview-wrap .section-sep td {
+      background: #2a1a2e; color: #d070ff; font-weight: 700;
+      font-size: 0.78rem; text-transform: uppercase; letter-spacing: 1px;
+      padding: 5px 10px; border-top: 1px solid #5a2a7a; border-bottom: 1px solid #5a2a7a;
+    }
+
+    /* Meta detected */
+    .meta-detected {
+      background: #131320; border: 1px solid #2a2a4a; border-radius: 8px;
+      padding: 12px 16px; margin-bottom: 14px; font-size: 0.8rem; color: #aaa;
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    }
+    .meta-detected span { color: #ffd700; font-weight: 600; }
+    .meta-detected label { color: #888; font-size: 0.73rem; }
+
+    /* Output */
+    .output-toolbar {
+      display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
+    }
+    button {
+      background: #e94560; color: #fff; border: none; border-radius: 6px;
+      padding: 9px 16px; font-size: 0.87rem; font-weight: 600; cursor: pointer;
+    }
+    button:hover { background: #c73652; }
+    button.sec { background: #2a2a2a; border: 1px solid #444; }
+    button.sec:hover { background: #3a3a3a; }
+    .copy-ok { font-size: 0.8rem; color: #28a745; opacity: 0; transition: opacity 0.3s; }
+    .copy-ok.show { opacity: 1; }
+
+    textarea#htmlOutput {
+      width: 100%; height: 300px; background: #111; color: #a8d8a8;
+      border: 1px solid #333; border-radius: 6px; padding: 12px;
+      font-family: 'Courier New', monospace; font-size: 0.77rem;
+      line-height: 1.5; resize: vertical; outline: none;
+    }
+    #renderedPreview {
+      background: #f4f4f4; border-radius: 8px; padding: 20px; margin-top: 12px; overflow-x: auto;
+    }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Hit Flash FM</h1>
+  <span class="badge">Générateur HTML</span>
+</header>
+
+<div class="container">
+
+  <div class="step active" id="step1">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">Sélectionner le fichier Excel</div>
+    </div>
+    <label class="file-label" for="fileInput">📂 Choisir un fichier</label>
+    <input type="file" id="fileInput" accept=".xlsx,.xls,.ods">
+    <div class="file-info" id="fileInfo"></div>
+  </div>
+
+  <div class="step" id="step2">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">Sélectionner l'onglet</div>
+    </div>
+    <select id="sheetSelect" disabled>
+      <option value="">— Charger un fichier d'abord —</option>
+    </select>
+  </div>
+
+  <div class="step" id="step3">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">Aperçu et code HTML</div>
+    </div>
+
+    <div id="previewSection" class="hidden">
+      <div class="meta-detected" id="metaBox"></div>
+      <div class="preview-wrap" id="previewWrap"></div>
+
+      <div style="margin-top:20px;">
+        <div class="output-toolbar">
+          <button id="copyBtn">📋 Copier le HTML</button>
+          <button class="sec" id="toggleRender">👁 Aperçu rendu</button>
+          <span class="copy-ok" id="copyOk">✅ Copié !</span>
+        </div>
+        <textarea id="htmlOutput" readonly></textarea>
+        <div id="renderedPreview" class="hidden"></div>
+      </div>
+    </div>
+    <p class="hint" id="step3ph">Sélectionnez un onglet pour générer le tableau.</p>
+  </div>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   Utilitaires
+═══════════════════════════════════════════════════════════════════════════ */
+const $  = id => document.getElementById(id);
+const esc = s => String(s ?? '')
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+function isBlankRow(r) { return r.every(c => String(c ?? '').trim() === ''); }
+function cellVal(r, c) { return String(r[c] ?? '').trim(); }
+
+// Mots-clés qui indiquent une ligne de métadonnée (hors tableau)
+const META_RE = /classement|hit\s*flash|flash\s*fm|semaine|week|n°\s*\d|^\d{1,3}$|période|édition|edition|\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}|\d{4}[\/\-.]\d{1,2}/i;
+// Mots-clés qui indiquent une ligne de séparation de section dans le tableau
+const SECTION_RE = /sortie|nouveau|nouvelle|entr[eé]e|nouveaut|exit/i;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Parsing de la feuille
+═══════════════════════════════════════════════════════════════════════════ */
+function parseSheet(rows) {
+  // 1. Retirer les lignes vides en fin
+  while (rows.length && isBlankRow(rows[rows.length - 1])) rows.pop();
+
+  // 2. Identifier la ligne d'en-tête du tableau :
+  //    première ligne avec ≥ 2 cellules non vides dont plusieurs sont du texte
+  //    ET qui ne ressemble pas à une ligne de métadonnée pure
+  let headerIdx = -1;
+  for (let i = 0; i < rows.length; i++) {
+    const cells = rows[i].map(c => String(c ?? '').trim()).filter(Boolean);
+    if (cells.length < 2) continue;
+    // ligne avec plusieurs textes non-numériques → candidat en-tête
+    const textCells = cells.filter(c => isNaN(Number(c)) && !isDateLike(c));
+    if (textCells.length >= 2) { headerIdx = i; break; }
+  }
+  if (headerIdx < 0) headerIdx = 0;
+
+  // 3. Métadonnées = toutes les lignes avant l'en-tête (non vides)
+  const rawMeta = rows.slice(0, headerIdx)
+    .filter(r => !isBlankRow(r))
+    .flatMap(r => r.map(c => String(c ?? '').trim()).filter(Boolean));
+
+  // 4. Colonnes utiles : non vides dans ≥1 ligne de données
+  const dataRaw = rows.slice(headerIdx + 1).filter(r => !isBlankRow(r));
+  const headerRow = rows[headerIdx] ?? [];
+  const maxCol = Math.max(headerRow.length, ...dataRaw.map(r => r.length));
+
+  const usedCols = [];
+  for (let c = 0; c < maxCol; c++) {
+    const hdrFilled = String(headerRow[c] ?? '').trim() !== '';
+    const dataFilled = dataRaw.some(r => String(r[c] ?? '').trim() !== '');
+    if (hdrFilled || dataFilled) usedCols.push(c);
+  }
+
+  const headers = usedCols.map(c => String(headerRow[c] ?? '').trim());
+
+  // 5. Lignes de données avec marquage des séparateurs de section
+  const sections = []; // tableau de {type:'data'|'section', ...}
+  let currentSection = { label: null, rows: [] };
+
+  dataRaw.forEach(r => {
+    const filled = usedCols.map(c => String(r[c] ?? '').trim());
+    const nonEmpty = filled.filter(Boolean);
+
+    // Ligne séparateur de section : une seule cellule significative avec mot-clé
+    if (nonEmpty.length <= 2 && nonEmpty.some(v => SECTION_RE.test(v))) {
+      if (currentSection.rows.length > 0 || currentSection.label) {
+        sections.push({ ...currentSection });
+      }
+      currentSection = { label: nonEmpty.join(' '), rows: [] };
+      return;
+    }
+    currentSection.rows.push(filled);
+  });
+  if (currentSection.rows.length > 0 || currentSection.label) {
+    sections.push({ ...currentSection });
+  }
+
+  return { meta: rawMeta, headers, sections };
+}
+
+function isDateLike(s) {
+  return /\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(s) ||
+         /\d{4}[\/\-.]\d{1,2}[\/\-.]\d{1,2}/.test(s);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Rendu aperçu (dark — dans l'appli)
+═══════════════════════════════════════════════════════════════════════════ */
+function renderAppPreview(parsed) {
+  const { meta, headers, sections } = parsed;
+
+  // Métadonnées
+  const mb = $('metaBox');
+  if (meta.length) {
+    mb.classList.remove('hidden');
+    mb.innerHTML = '<label>Métadonnées hors tableau :</label> ' +
+      meta.map(v => `<span>${esc(v)}</span>`).join('');
+  } else {
+    mb.classList.add('hidden');
+  }
+
+  // Tableau
+  let t = `<table><tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>`;
+  sections.forEach(sec => {
+    if (sec.label) {
+      t += `<tr class="section-sep"><td colspan="${headers.length}">${esc(sec.label)}</td></tr>`;
+    }
+    sec.rows.forEach(row => {
+      t += '<tr>' + row.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>';
+    });
+  });
+  t += '</table>';
+  $('previewWrap').innerHTML = t;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Génération du HTML final (copier-coller)
+═══════════════════════════════════════════════════════════════════════════ */
+function generateHTML({ meta, headers, sections }) {
+  const L = [];
+
+  /* ── Bloc métadonnées ── */
+  if (meta.length) {
+    // Séparer les valeurs qui ressemblent à une date des autres
+    const isDate = v => /\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}/.test(v) || /\d{4}[\/\-.]\d{1,2}/.test(v);
+    L.push(`<div style="font-family:'Segoe UI',Arial,sans-serif;margin-bottom:16px;display:inline-block;">`);
+    L.push(`  <div style="background:linear-gradient(135deg,#1a1a2e 0%,#0f3460 100%);`);
+    L.push(`    border-radius:10px;padding:14px 22px;display:flex;flex-wrap:wrap;gap:14px;align-items:center;">`);
+    meta.forEach(v => {
+      if (isDate(v)) {
+        // Date : badge accent bien visible
+        L.push(`    <span style="font-family:'Segoe UI',Arial,sans-serif;background:#e94560;`);
+        L.push(`      color:#fff;font-size:0.95rem;font-weight:700;white-space:nowrap;`);
+        L.push(`      padding:5px 14px;border-radius:20px;letter-spacing:0.5px;">${esc(v)}</span>`);
+      } else {
+        L.push(`    <span style="color:#ffd700;font-family:'Segoe UI',Arial,sans-serif;`);
+        L.push(`      font-size:1rem;font-weight:700;white-space:nowrap;">${esc(v)}</span>`);
+      }
+    });
+    L.push(`  </div>`);
+    L.push(`</div>`);
+    L.push(``);
+  }
+
+  /* ── Tableau ── */
+  L.push(`<div style="font-family:'Segoe UI',Arial,sans-serif;display:inline-block;min-width:320px;max-width:700px;width:auto;">`);
+  L.push(`<table style="border-collapse:collapse;width:auto;min-width:320px;`);
+  L.push(`  font-size:14px;border-radius:10px;overflow:hidden;`);
+  L.push(`  box-shadow:0 6px 24px rgba(0,0,0,0.15);">`);
+
+  /* En-tête */
+  L.push(`  <thead>`);
+  L.push(`    <tr style="background:#1a1a2e;">`);
+  headers.forEach((h, i) => {
+    const isRank = i === 0;
+    L.push(`      <th style="background:#1a1a2e;color:#ffd700;`);
+    L.push(`        padding:12px ${isRank ? '10px' : '18px'};`);
+    L.push(`        text-align:${isRank ? 'center' : 'left'};font-size:12px;`);
+    L.push(`        font-weight:800;text-transform:uppercase;letter-spacing:1px;`);
+    L.push(`        white-space:nowrap;`);
+    L.push(`        border-bottom:3px solid #e94560;`);
+    L.push(`        border-right:1px solid #2e2e4e;">${esc(h)}</th>`);
+  });
+  L.push(`    </tr>`);
+  L.push(`  </thead>`);
+
+  /* Corps */
+  L.push(`  <tbody>`);
+  let rowIdx = 0;
+  sections.forEach((sec, si) => {
+    // Séparateur de section
+    if (sec.label) {
+      L.push(`    <tr>`);
+      L.push(`      <td colspan="${headers.length}" style="`);
+      L.push(`        background:linear-gradient(90deg,#4a1060,#6a1f8a);`);
+      L.push(`        color:#e8b4ff;font-weight:700;font-size:12px;`);
+      L.push(`        text-transform:uppercase;letter-spacing:1.2px;`);
+      L.push(`        padding:8px 16px;border-top:2px solid #7a2fa0;`);
+      L.push(`        border-bottom:2px solid #7a2fa0;">${esc(sec.label)}</td>`);
+      L.push(`    </tr>`);
+    }
+
+    sec.rows.forEach(row => {
+      const bg   = rowIdx % 2 === 0 ? '#ffffff' : '#f0f4ff';
+      const hov  = '#ddeaff';
+      rowIdx++;
+      L.push(`    <tr style="background:${bg};" onmouseover="this.style.background='${hov}'" onmouseout="this.style.background='${bg}'">`);
+      row.forEach((cell, ci) => {
+        const border = 'border-bottom:1px solid #dce4f5;border-right:1px solid #eaeffa;';
+        // Colonne 0 : numéro de rang
+        if (ci === 0 && /^\d+$/.test(cell)) {
+          L.push(`      <td style="padding:9px 10px;${border}`);
+          L.push(`        text-align:center;font-weight:800;font-size:16px;`);
+          L.push(`        color:#e94560;width:42px;white-space:nowrap;">${esc(cell)}</td>`);
+        // Colonne 1 : statut — centré ; si E ou RE → badge rouge
+        } else if (ci === 1) {
+          if (/^(E|RE)$/i.test(cell.trim())) {
+            L.push(`      <td style="padding:9px 10px;${border}text-align:center;white-space:nowrap;">`);
+            L.push(`        <span style="display:inline-block;background:#e94560;color:#fff;`);
+            L.push(`          font-weight:700;font-size:11px;padding:2px 8px;border-radius:12px;`);
+            L.push(`          letter-spacing:0.5px;text-transform:uppercase;">${esc(cell.trim())}</span>`);
+            L.push(`      </td>`);
+          } else {
+            L.push(`      <td style="padding:9px 12px;${border}color:#1a1a2e;text-align:center;white-space:nowrap;">${esc(cell)}</td>`);
+          }
+        // Colonnes 2 à 5 : centrées (après rang col0 et statut col1)
+        } else if (ci >= 2 && ci <= 5) {
+          L.push(`      <td style="padding:9px 12px;${border}color:#1a1a2e;text-align:center;white-space:nowrap;">${esc(cell)}</td>`);
+        // Colonne 6 : interprète → gras, aligné à gauche
+        } else if (ci === 6) {
+          L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;font-weight:700;white-space:nowrap;">${esc(cell)}</td>`);
+        } else {
+          L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;white-space:nowrap;">${esc(cell)}</td>`);
+        }
+      });
+      L.push(`    </tr>`);
+    });
+  });
+  L.push(`  </tbody>`);
+  L.push(`</table>`);
+  L.push(`</div>`);
+
+  return L.join('\n');
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Gestion UI
+═══════════════════════════════════════════════════════════════════════════ */
+let workbook = null;
+
+$('fileInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    workbook = XLSX.read(new Uint8Array(ev.target.result), { type:'array', cellDates:true, raw:false });
+    const sel = $('sheetSelect');
+    sel.innerHTML = '<option value="">— Choisir un onglet —</option>';
+    workbook.SheetNames.forEach(n => {
+      const o = document.createElement('option');
+      o.value = o.textContent = n;
+      sel.appendChild(o);
+    });
+    sel.disabled = false;
+    $('fileInfo').innerHTML = `Fichier : <strong>${file.name}</strong> — ${workbook.SheetNames.length} onglet(s).`;
+    $('step1').classList.replace('active','done');
+    $('step2').classList.add('active');
+    $('previewSection').classList.add('hidden');
+    $('step3ph').classList.remove('hidden');
+    $('step3').classList.remove('active','done');
+    $('renderedPreview').classList.add('hidden');
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+$('sheetSelect').addEventListener('change', () => {
+  const name = $('sheetSelect').value;
+  if (!name || !workbook) return;
+  $('step2').classList.replace('active','done');
+  $('step3').classList.add('active');
+
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header:1, defval:'', raw:false });
+  const parsed = parseSheet(rows);
+
+  renderAppPreview(parsed);
+  const html = generateHTML(parsed);
+  $('htmlOutput').value = html;
+  $('renderedPreview').innerHTML = html;
+  $('previewSection').classList.remove('hidden');
+  $('step3ph').classList.add('hidden');
+});
+
+$('copyBtn').addEventListener('click', () => {
+  const v = $('htmlOutput').value;
+  if (!v) return;
+  navigator.clipboard.writeText(v).catch(() => {
+    $('htmlOutput').select(); document.execCommand('copy');
+  }).finally(() => {
+    const el = $('copyOk');
+    el.classList.add('show');
+    setTimeout(() => el.classList.remove('show'), 2500);
+  });
+});
+
+$('toggleRender').addEventListener('click', () => {
+  const hidden = $('renderedPreview').classList.toggle('hidden');
+  $('toggleRender').textContent = hidden ? "👁 Aperçu rendu" : "🙈 Masquer l'aperçu";
+});
+</script>
+</body>
+</html>
