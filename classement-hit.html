@@ -18,253 +18,113 @@
 
     header {
       background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
-      padding: 24px 32px;
+      padding: 22px 32px;
       border-bottom: 2px solid #e94560;
       display: flex;
       align-items: center;
-      gap: 16px;
+      gap: 14px;
+    }
+    header h1 { margin: 0; font-size: 1.5rem; color: #fff; letter-spacing: 1px; }
+    header .badge {
+      background: #e94560; color: #fff; font-size: 0.65rem;
+      font-weight: 700; padding: 3px 8px; border-radius: 4px;
+      text-transform: uppercase; letter-spacing: 1px;
     }
 
-    header h1 {
-      margin: 0;
-      font-size: 1.6rem;
-      color: #fff;
-      letter-spacing: 1px;
-    }
-
-    header span.badge {
-      background: #e94560;
-      color: #fff;
-      font-size: 0.7rem;
-      font-weight: 700;
-      padding: 3px 8px;
-      border-radius: 4px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-
-    .container {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 32px 24px;
-    }
+    .container { max-width: 1100px; margin: 0 auto; padding: 28px 20px; }
 
     .step {
-      background: #1a1a1a;
-      border: 1px solid #2a2a2a;
-      border-radius: 10px;
-      padding: 24px;
-      margin-bottom: 20px;
+      background: #1a1a1a; border: 1px solid #2a2a2a;
+      border-radius: 10px; padding: 22px; margin-bottom: 18px;
       transition: border-color 0.3s;
     }
-
     .step.active { border-color: #e94560; }
-    .step.done { border-color: #28a745; }
+    .step.done   { border-color: #28a745; }
 
-    .step-header {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
+    .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
     .step-num {
-      width: 32px;
-      height: 32px;
-      border-radius: 50%;
-      background: #2a2a2a;
-      color: #888;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 700;
-      font-size: 0.9rem;
-      flex-shrink: 0;
+      width: 30px; height: 30px; border-radius: 50%;
+      background: #2a2a2a; color: #888;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.85rem; flex-shrink: 0;
     }
-
     .step.active .step-num { background: #e94560; color: #fff; }
-    .step.done .step-num { background: #28a745; color: #fff; }
-
-    .step-title {
-      font-size: 1rem;
-      font-weight: 600;
-      color: #ccc;
-    }
-
-    .step.active .step-title { color: #fff; }
+    .step.done   .step-num { background: #28a745; color: #fff; }
+    .step-title { font-size: 0.97rem; font-weight: 600; color: #ccc; }
+    .step.active .step-title,
+    .step.done   .step-title { color: #fff; }
 
     label.file-label {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      background: #e94560;
-      color: #fff;
-      padding: 10px 20px;
-      border-radius: 6px;
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 0.9rem;
-      transition: background 0.2s;
+      display: inline-flex; align-items: center; gap: 8px;
+      background: #e94560; color: #fff;
+      padding: 9px 18px; border-radius: 6px; cursor: pointer;
+      font-weight: 600; font-size: 0.88rem; transition: background 0.2s;
     }
-
     label.file-label:hover { background: #c73652; }
-
     input[type="file"] { display: none; }
 
     select {
-      background: #2a2a2a;
-      color: #f0f0f0;
-      border: 1px solid #444;
-      border-radius: 6px;
-      padding: 10px 14px;
-      font-size: 0.95rem;
-      min-width: 300px;
-      cursor: pointer;
-      outline: none;
-      transition: border-color 0.2s;
+      background: #2a2a2a; color: #f0f0f0; border: 1px solid #444;
+      border-radius: 6px; padding: 9px 13px; font-size: 0.92rem;
+      min-width: 280px; cursor: pointer; outline: none; transition: border-color 0.2s;
     }
-
     select:hover, select:focus { border-color: #e94560; }
 
-    .file-info {
-      margin-top: 12px;
-      font-size: 0.85rem;
-      color: #888;
-    }
-
+    .file-info { margin-top: 10px; font-size: 0.82rem; color: #888; }
     .file-info strong { color: #28a745; }
+    .hint { font-size: 0.78rem; color: #555; margin-top: 8px; margin-bottom: 0; }
 
-    /* Preview table */
-    .preview-wrap {
-      overflow-x: auto;
-      margin-top: 16px;
-      border: 1px solid #2a2a2a;
-      border-radius: 8px;
-    }
-
-    .preview-wrap table {
-      border-collapse: collapse;
-      width: 100%;
-      font-size: 0.85rem;
-    }
-
+    /* Preview app (dark) */
+    .preview-wrap { overflow-x: auto; margin-top: 14px; border: 1px solid #2a2a2a; border-radius: 8px; }
+    .preview-wrap table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
     .preview-wrap th {
-      background: #1f1f2e;
-      color: #e94560;
-      padding: 8px 12px;
-      text-align: left;
-      font-weight: 600;
-      border-bottom: 1px solid #333;
-      white-space: nowrap;
+      background: #1f1f2e; color: #e94560; padding: 7px 11px;
+      text-align: left; font-weight: 600; border-bottom: 1px solid #333; white-space: nowrap;
     }
-
     .preview-wrap td {
-      padding: 7px 12px;
-      border-bottom: 1px solid #222;
-      color: #ddd;
-      white-space: nowrap;
+      padding: 6px 11px; border-bottom: 1px solid #222; color: #ddd; white-space: nowrap;
     }
-
     .preview-wrap tr:last-child td { border-bottom: none; }
     .preview-wrap tr:hover td { background: #1f1f1f; }
 
-    /* Output area */
-    .output-section { margin-top: 8px; }
-
+    /* Toolbar */
     .output-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 12px;
-      flex-wrap: wrap;
+      display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;
     }
-
     button {
-      background: #e94560;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      padding: 10px 18px;
-      font-size: 0.9rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: background 0.2s;
+      background: #e94560; color: #fff; border: none; border-radius: 6px;
+      padding: 9px 16px; font-size: 0.88rem; font-weight: 600;
+      cursor: pointer; transition: background 0.2s;
     }
-
     button:hover { background: #c73652; }
-    button.secondary {
-      background: #2a2a2a;
-      border: 1px solid #444;
-    }
+    button.secondary { background: #2a2a2a; border: 1px solid #444; }
     button.secondary:hover { background: #3a3a3a; }
 
-    .copy-status {
-      font-size: 0.85rem;
-      color: #28a745;
-      opacity: 0;
-      transition: opacity 0.3s;
-    }
-
+    .copy-status { font-size: 0.82rem; color: #28a745; opacity: 0; transition: opacity 0.3s; }
     .copy-status.show { opacity: 1; }
 
     textarea#htmlOutput {
-      width: 100%;
-      height: 300px;
-      background: #111;
-      color: #a8d8a8;
-      border: 1px solid #333;
-      border-radius: 6px;
-      padding: 14px;
-      font-family: 'Courier New', monospace;
-      font-size: 0.8rem;
-      line-height: 1.5;
-      resize: vertical;
-      outline: none;
+      width: 100%; height: 320px; background: #111; color: #a8d8a8;
+      border: 1px solid #333; border-radius: 6px; padding: 13px;
+      font-family: 'Courier New', monospace; font-size: 0.78rem;
+      line-height: 1.5; resize: vertical; outline: none;
     }
 
-    /* Rendered preview */
+    /* Rendered preview — white background */
     #renderedPreview {
-      background: #fff;
-      color: #000;
-      border-radius: 8px;
-      padding: 16px;
-      margin-top: 16px;
-      overflow-x: auto;
+      background: #fff; color: #000; border-radius: 8px;
+      padding: 20px; margin-top: 14px; overflow-x: auto;
     }
-
-    #renderedPreview table {
-      border-collapse: collapse;
-      width: 100%;
-      font-family: Arial, sans-serif;
-      font-size: 14px;
-    }
-
-    #renderedPreview th {
-      background: #1a1a2e;
-      color: #fff;
-      padding: 8px 12px;
-      text-align: left;
-      border: 1px solid #ccc;
-    }
-
-    #renderedPreview td {
-      padding: 7px 12px;
-      border: 1px solid #ccc;
-    }
-
-    #renderedPreview tr:nth-child(even) td { background: #f5f5f5; }
 
     .hidden { display: none; }
 
-    .toggle-btn {
-      font-size: 0.8rem;
+    /* Metadata badges inside preview area */
+    .meta-preview {
+      background: #111; border: 1px solid #2a2a2a; border-radius: 8px;
+      padding: 14px 18px; margin-top: 14px; margin-bottom: 4px;
+      font-size: 0.82rem; color: #aaa;
     }
-
-    .hint {
-      font-size: 0.8rem;
-      color: #666;
-      margin-top: 8px;
-    }
+    .meta-preview strong { color: #e94560; }
   </style>
 </head>
 <body>
@@ -276,20 +136,18 @@
 
 <div class="container">
 
-  <!-- Étape 1 : sélection du fichier -->
+  <!-- Étape 1 -->
   <div class="step active" id="step1">
     <div class="step-header">
       <div class="step-num">1</div>
       <div class="step-title">Sélectionner le fichier Excel (.xlsx / .xls)</div>
     </div>
-    <label class="file-label" for="fileInput">
-      📂 Choisir un fichier
-    </label>
+    <label class="file-label" for="fileInput">📂 Choisir un fichier</label>
     <input type="file" id="fileInput" accept=".xlsx,.xls,.ods">
     <div class="file-info" id="fileInfo"></div>
   </div>
 
-  <!-- Étape 2 : sélection de l'onglet -->
+  <!-- Étape 2 -->
   <div class="step" id="step2">
     <div class="step-header">
       <div class="step-num">2</div>
@@ -301,27 +159,31 @@
     <p class="hint">Les onglets disponibles dans le fichier apparaîtront ici.</p>
   </div>
 
-  <!-- Étape 3 : résultat -->
+  <!-- Étape 3 -->
   <div class="step" id="step3">
     <div class="step-header">
       <div class="step-num">3</div>
-      <div class="step-title">Aperçu du tableau et génération HTML</div>
+      <div class="step-title">Aperçu et génération du code HTML</div>
     </div>
 
     <div id="previewSection" class="hidden">
+
+      <div class="meta-preview" id="metaPreview"></div>
+
       <div class="preview-wrap" id="previewWrap"></div>
 
-      <div class="output-section" style="margin-top:24px;">
+      <div style="margin-top:22px;">
         <div class="output-toolbar">
           <button id="copyBtn">📋 Copier le HTML</button>
-          <button class="secondary toggle-btn" id="toggleRender">👁 Aperçu rendu</button>
-          <span class="copy-status" id="copyStatus">✅ Copié !</span>
+          <button class="secondary" id="toggleRender">👁 Aperçu rendu</button>
+          <span class="copy-status" id="copyStatus">✅ Copié dans le presse-papiers !</span>
         </div>
         <textarea id="htmlOutput" readonly placeholder="Le code HTML apparaîtra ici…"></textarea>
         <div id="renderedPreview" class="hidden"></div>
       </div>
     </div>
-    <div id="step3Placeholder" class="hint">Sélectionnez un onglet pour générer le tableau.</div>
+
+    <p class="hint" id="step3ph">Sélectionnez un onglet pour générer le tableau.</p>
   </div>
 
 </div>
@@ -329,73 +191,60 @@
 <script>
   let workbook = null;
 
-  const fileInput    = document.getElementById('fileInput');
-  const fileInfo     = document.getElementById('fileInfo');
-  const sheetSelect  = document.getElementById('sheetSelect');
-  const step1        = document.getElementById('step1');
-  const step2        = document.getElementById('step2');
-  const step3        = document.getElementById('step3');
-  const previewSec   = document.getElementById('previewSection');
-  const step3ph      = document.getElementById('step3Placeholder');
-  const previewWrap  = document.getElementById('previewWrap');
-  const htmlOutput   = document.getElementById('htmlOutput');
-  const copyBtn      = document.getElementById('copyBtn');
-  const copyStatus   = document.getElementById('copyStatus');
-  const toggleRender = document.getElementById('toggleRender');
-  const rendered     = document.getElementById('renderedPreview');
+  const $ = id => document.getElementById(id);
+  const fileInput   = $('fileInput');
+  const fileInfo    = $('fileInfo');
+  const sheetSelect = $('sheetSelect');
+  const step1 = $('step1'), step2 = $('step2'), step3 = $('step3');
+  const previewSec  = $('previewSection');
+  const step3ph     = $('step3ph');
+  const previewWrap = $('previewWrap');
+  const metaPreview = $('metaPreview');
+  const htmlOutput  = $('htmlOutput');
+  const copyBtn     = $('copyBtn');
+  const copyStatus  = $('copyStatus');
+  const toggleRender = $('toggleRender');
+  const rendered    = $('renderedPreview');
 
-  // ─── Chargement du fichier ───────────────────────────────────────────────
-  fileInput.addEventListener('change', (e) => {
+  // ── Chargement fichier ───────────────────────────────────────────────────
+  fileInput.addEventListener('change', e => {
     const file = e.target.files[0];
     if (!file) return;
-
     const reader = new FileReader();
-    reader.onload = (ev) => {
-      const data = new Uint8Array(ev.target.result);
-      workbook = XLSX.read(data, { type: 'array', cellStyles: true, cellDates: true });
-
-      // Afficher les onglets
+    reader.onload = ev => {
+      workbook = XLSX.read(new Uint8Array(ev.target.result), { type: 'array', cellDates: true, raw: false });
       sheetSelect.innerHTML = '<option value="">— Choisir un onglet —</option>';
-      workbook.SheetNames.forEach(name => {
-        const opt = document.createElement('option');
-        opt.value = name;
-        opt.textContent = name;
-        sheetSelect.appendChild(opt);
+      workbook.SheetNames.forEach(n => {
+        const o = document.createElement('option');
+        o.value = o.textContent = n;
+        sheetSelect.appendChild(o);
       });
       sheetSelect.disabled = false;
-
-      fileInfo.innerHTML = `Fichier chargé : <strong>${file.name}</strong> — ${workbook.SheetNames.length} onglet(s) trouvé(s).`;
-
-      step1.classList.remove('active');
-      step1.classList.add('done');
+      fileInfo.innerHTML = `Fichier chargé : <strong>${file.name}</strong> — ${workbook.SheetNames.length} onglet(s).`;
+      step1.classList.replace('active','done');
       step2.classList.add('active');
-
-      // Réinitialiser l'étape 3
       previewSec.classList.add('hidden');
       step3ph.classList.remove('hidden');
-      step3.classList.remove('active', 'done');
+      step3.classList.remove('active','done');
       rendered.classList.add('hidden');
     };
     reader.readAsArrayBuffer(file);
   });
 
-  // ─── Sélection de l'onglet ───────────────────────────────────────────────
+  // ── Sélection onglet ─────────────────────────────────────────────────────
   sheetSelect.addEventListener('change', () => {
     const name = sheetSelect.value;
     if (!name || !workbook) return;
-
-    step2.classList.remove('active');
-    step2.classList.add('done');
+    step2.classList.replace('active','done');
     step3.classList.add('active');
 
     const sheet = workbook.Sheets[name];
-    const rows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+    const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+    const parsed = parseSheet(raw);
 
-    // Filtrer les lignes vides en fin de tableau
-    const cleanRows = trimTrailingEmpty(rows);
-
-    renderPreview(cleanRows);
-    const html = generateHTML(cleanRows, name);
+    renderMeta(parsed.meta);
+    renderAppPreview(parsed.headers, parsed.dataRows);
+    const html = generateHTML(parsed);
     htmlOutput.value = html;
     rendered.innerHTML = html;
 
@@ -403,110 +252,178 @@
     step3ph.classList.add('hidden');
   });
 
-  // ─── Utilitaires ─────────────────────────────────────────────────────────
+  // ── Parsing intelligent ──────────────────────────────────────────────────
 
-  function trimTrailingEmpty(rows) {
-    let last = rows.length - 1;
-    while (last >= 0 && rows[last].every(c => c === '' || c === null || c === undefined)) {
-      last--;
-    }
-    return rows.slice(0, last + 1);
-  }
+  /**
+   * Détecte les lignes de métadonnées (avant l'en-tête réel du tableau)
+   * et les lignes de données, puis supprime les colonnes vides.
+   */
+  function parseSheet(rows) {
+    // 1. Supprimer les lignes vides en fin
+    while (rows.length && rows[rows.length-1].every(c => String(c).trim() === '')) rows.pop();
 
-  function escapeHtml(str) {
-    return String(str)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  // Nombre de colonnes max dans le tableau
-  function maxCols(rows) {
-    return rows.reduce((m, r) => Math.max(m, r.length), 0);
-  }
-
-  function renderPreview(rows) {
-    const cols = maxCols(rows);
-    let html = '<table>';
-    rows.forEach((row, i) => {
-      html += '<tr>';
-      for (let c = 0; c < cols; c++) {
-        const val = escapeHtml(row[c] ?? '');
-        if (i === 0) {
-          html += `<th>${val}</th>`;
-        } else {
-          html += `<td>${val}</td>`;
-        }
+    // 2. Trouver la ligne d'en-tête du tableau : première ligne avec ≥ 2 cellules non vides
+    //    ET dont au moins une cellule ressemble à un label de colonne (pas juste un nombre/date)
+    let headerIdx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      const filled = rows[i].filter(c => String(c).trim() !== '');
+      if (filled.length >= 2) {
+        // Si toutes les cellules non-vides sont numériques → pas un en-tête
+        const hasText = filled.some(c => isNaN(Number(c)) && !isDateLike(String(c)));
+        if (hasText) { headerIdx = i; break; }
       }
-      html += '</tr>';
+    }
+    if (headerIdx === -1) headerIdx = 0;
+
+    // 3. Métadonnées = lignes avant l'en-tête
+    const metaRows = rows.slice(0, headerIdx);
+
+    // 4. En-tête + données
+    const headerRow = rows[headerIdx] || [];
+    const dataRows  = rows.slice(headerIdx + 1);
+
+    // 5. Déterminer les colonnes utiles (non vides dans au moins une ligne de données)
+    const totalCols = Math.max(headerRow.length, ...dataRows.map(r => r.length));
+    const usedCols = [];
+    for (let c = 0; c < totalCols; c++) {
+      const anyFilled = dataRows.some(r => String(r[c] ?? '').trim() !== '');
+      if (anyFilled) usedCols.push(c);
+    }
+    // Toujours garder les colonnes d'en-tête non vides même si données vides
+    headerRow.forEach((v, c) => {
+      if (String(v).trim() !== '' && !usedCols.includes(c)) usedCols.push(c);
     });
-    html += '</table>';
-    previewWrap.innerHTML = html;
+    usedCols.sort((a,b) => a-b);
+
+    const headers = usedCols.map(c => String(headerRow[c] ?? '').trim());
+    const filteredData = dataRows
+      .filter(r => r.some(c => String(c).trim() !== '')) // supprimer lignes vides
+      .map(r => usedCols.map(c => String(r[c] ?? '').trim()));
+
+    // 6. Extraire métadonnées structurées
+    const meta = extractMeta(metaRows, rows[headerIdx - 1]);
+
+    return { meta, headers, dataRows: filteredData };
   }
 
-  function generateHTML(rows, sheetName) {
-    const cols = maxCols(rows);
+  // Mots-clés indiquant des métadonnées
+  const META_KEYS = ['classement','hit','semaine','week','date','n°','numéro','numero','période','edition','édition'];
+
+  function extractMeta(metaRows, lastBeforeHeader) {
+    const meta = [];
+    // Aplatir toutes les cellules non vides des lignes avant l'en-tête
+    const allCells = [];
+    metaRows.forEach(r => r.forEach(c => { const v = String(c).trim(); if (v) allCells.push(v); }));
+    // Si pas de lignes méta, essayer la ligne juste avant l'en-tête
+    if (allCells.length === 0 && lastBeforeHeader) {
+      lastBeforeHeader.forEach(c => { const v = String(c).trim(); if (v) allCells.push(v); });
+    }
+    return allCells;
+  }
+
+  function isDateLike(s) {
+    return /\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/.test(s) ||
+           /\d{4}[\/\-\.]\d{1,2}[\/\-\.]\d{1,2}/.test(s);
+  }
+
+  // ── Aperçu dark (dans l'appli) ───────────────────────────────────────────
+  function renderMeta(metaCells) {
+    if (!metaCells.length) { metaPreview.classList.add('hidden'); return; }
+    metaPreview.classList.remove('hidden');
+    metaPreview.innerHTML = '<strong>Métadonnées détectées :</strong> ' +
+      metaCells.map(c => `<span style="margin-right:14px;">${esc(c)}</span>`).join('');
+  }
+
+  function renderAppPreview(headers, dataRows) {
+    let t = '<table><tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr>';
+    dataRows.forEach(r => {
+      t += '<tr>' + r.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>';
+    });
+    t += '</table>';
+    previewWrap.innerHTML = t;
+  }
+
+  // ── Génération HTML finale ───────────────────────────────────────────────
+  function generateHTML({ meta, headers, dataRows }) {
     const lines = [];
 
-    lines.push(`<!-- Classement Hit Flash FM — Onglet : ${escapeHtml(sheetName)} -->`);
-    lines.push('<table style="border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;">');
+    // Bloc métadonnées
+    if (meta.length) {
+      lines.push('<div style="font-family:\'Segoe UI\',Arial,sans-serif;margin-bottom:18px;">');
+      lines.push('  <div style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:10px;');
+      lines.push('    background:linear-gradient(135deg,#1a1a2e,#0f3460);');
+      lines.push('    border-radius:10px;padding:14px 22px;color:#fff;">');
+      meta.forEach(cell => {
+        lines.push(`    <span style="font-size:0.95rem;font-weight:600;color:#ffd700;white-space:nowrap;">${esc(cell)}</span>`);
+      });
+      lines.push('  </div>');
+      lines.push('</div>');
+    }
 
-    rows.forEach((row, i) => {
-      if (i === 0) {
-        // Première ligne = en-tête
-        lines.push('  <thead>');
-        lines.push('    <tr>');
-        for (let c = 0; c < cols; c++) {
-          const val = escapeHtml(row[c] ?? '');
-          lines.push(`      <th style="background:#1a1a2e;color:#fff;padding:8px 12px;text-align:left;border:1px solid #ccc;">${val}</th>`);
-        }
-        lines.push('    </tr>');
-        lines.push('  </thead>');
-        lines.push('  <tbody>');
-      } else {
-        const bg = (i % 2 === 0) ? '#f5f5f5' : '#ffffff';
-        lines.push(`    <tr style="background:${bg};">`);
-        for (let c = 0; c < cols; c++) {
-          const val = escapeHtml(row[c] ?? '');
-          lines.push(`      <td style="padding:7px 12px;border:1px solid #ccc;">${val}</td>`);
-        }
-        lines.push('    </tr>');
-      }
+    // Tableau
+    lines.push('<div style="overflow-x:auto;font-family:\'Segoe UI\',Arial,sans-serif;">');
+    lines.push('<table style="border-collapse:collapse;width:100%;font-size:14px;min-width:400px;');
+    lines.push('  box-shadow:0 4px 18px rgba(0,0,0,0.18);border-radius:10px;overflow:hidden;">');
+
+    // En-têtes
+    lines.push('  <thead>');
+    lines.push('    <tr style="background:linear-gradient(90deg,#1a1a2e,#0f3460);">');
+    headers.forEach(h => {
+      lines.push(`      <th style="padding:11px 16px;text-align:left;color:#fff;font-weight:700;`);
+      lines.push(`        font-size:13px;text-transform:uppercase;letter-spacing:0.5px;`);
+      lines.push(`        white-space:nowrap;border-bottom:2px solid #e94560;">${esc(h)}</th>`);
     });
+    lines.push('    </tr>');
+    lines.push('  </thead>');
 
+    // Corps
+    lines.push('  <tbody>');
+    dataRows.forEach((row, i) => {
+      const bg   = i % 2 === 0 ? '#ffffff' : '#f7f8fc';
+      const hover = '#eef2ff';
+      lines.push(`    <tr style="background:${bg};" onmouseover="this.style.background='${hover}'" onmouseout="this.style.background='${bg}'">`);
+
+      row.forEach((cell, ci) => {
+        // Première colonne (rang) : mise en valeur
+        if (ci === 0 && /^\d+$/.test(cell)) {
+          lines.push(`      <td style="padding:9px 16px;border-bottom:1px solid #e8e8e8;white-space:nowrap;`);
+          lines.push(`        font-weight:700;color:#e94560;font-size:15px;text-align:center;width:44px;">${esc(cell)}</td>`);
+        } else {
+          lines.push(`      <td style="padding:9px 16px;border-bottom:1px solid #e8e8e8;white-space:nowrap;">${esc(cell)}</td>`);
+        }
+      });
+      lines.push('    </tr>');
+    });
     lines.push('  </tbody>');
     lines.push('</table>');
+    lines.push('</div>');
 
     return lines.join('\n');
   }
 
-  // ─── Copier le HTML ───────────────────────────────────────────────────────
+  // ── Helpers ──────────────────────────────────────────────────────────────
+  function esc(s) {
+    return String(s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  // ── Copier ───────────────────────────────────────────────────────────────
   copyBtn.addEventListener('click', () => {
     if (!htmlOutput.value) return;
-    navigator.clipboard.writeText(htmlOutput.value).then(() => {
-      copyStatus.classList.add('show');
-      setTimeout(() => copyStatus.classList.remove('show'), 2500);
-    }).catch(() => {
-      // Fallback
-      htmlOutput.select();
-      document.execCommand('copy');
+    navigator.clipboard.writeText(htmlOutput.value).catch(() => {
+      htmlOutput.select(); document.execCommand('copy');
+    }).finally(() => {
       copyStatus.classList.add('show');
       setTimeout(() => copyStatus.classList.remove('show'), 2500);
     });
   });
 
-  // ─── Basculer l'aperçu rendu ──────────────────────────────────────────────
+  // ── Aperçu rendu ─────────────────────────────────────────────────────────
   toggleRender.addEventListener('click', () => {
-    if (rendered.classList.contains('hidden')) {
-      rendered.classList.remove('hidden');
-      toggleRender.textContent = '🙈 Masquer l\'aperçu';
-    } else {
-      rendered.classList.add('hidden');
-      toggleRender.textContent = '👁 Aperçu rendu';
-    }
+    const hidden = rendered.classList.toggle('hidden');
+    toggleRender.textContent = hidden ? '👁 Aperçu rendu' : "🙈 Masquer l'aperçu";
   });
 </script>
-
 </body>
 </html>
