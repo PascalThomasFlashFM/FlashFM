@@ -367,15 +367,22 @@ function generateHTML({ meta, headers, sections }) {
           L.push(`      <td style="padding:9px 10px;${border}`);
           L.push(`        text-align:center;font-weight:800;font-size:16px;`);
           L.push(`        color:#e94560;width:42px;white-space:nowrap;">${esc(cell)}</td>`);
-        // Colonne 1 : statut E / RE → badge rouge fond rouge texte blanc
-        } else if (ci === 1 && /^(E|RE)$/i.test(cell.trim())) {
-          L.push(`      <td style="padding:9px 10px;${border}text-align:center;white-space:nowrap;">`);
-          L.push(`        <span style="display:inline-block;background:#e94560;color:#fff;`);
-          L.push(`          font-weight:700;font-size:11px;padding:2px 8px;border-radius:12px;`);
-          L.push(`          letter-spacing:0.5px;text-transform:uppercase;">${esc(cell.trim())}</span>`);
-          L.push(`      </td>`);
-        // Colonne 2 : interprète → gras
-        } else if (ci === 2) {
+        // Colonne 1 : statut — centré ; si E ou RE → badge rouge
+        } else if (ci === 1) {
+          if (/^(E|RE)$/i.test(cell.trim())) {
+            L.push(`      <td style="padding:9px 10px;${border}text-align:center;white-space:nowrap;">`);
+            L.push(`        <span style="display:inline-block;background:#e94560;color:#fff;`);
+            L.push(`          font-weight:700;font-size:11px;padding:2px 8px;border-radius:12px;`);
+            L.push(`          letter-spacing:0.5px;text-transform:uppercase;">${esc(cell.trim())}</span>`);
+            L.push(`      </td>`);
+          } else {
+            L.push(`      <td style="padding:9px 12px;${border}color:#1a1a2e;text-align:center;white-space:nowrap;">${esc(cell)}</td>`);
+          }
+        // Colonnes 2 à 5 : centrées (après rang col0 et statut col1)
+        } else if (ci >= 2 && ci <= 5) {
+          L.push(`      <td style="padding:9px 12px;${border}color:#1a1a2e;text-align:center;white-space:nowrap;">${esc(cell)}</td>`);
+        // Colonne 6 : interprète → gras, aligné à gauche
+        } else if (ci === 6) {
           L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;font-weight:700;white-space:nowrap;">${esc(cell)}</td>`);
         } else {
           L.push(`      <td style="padding:9px 16px;${border}color:#1a1a2e;white-space:nowrap;">${esc(cell)}</td>`);
