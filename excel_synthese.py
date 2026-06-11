@@ -81,16 +81,32 @@ def check_row_status(existing_rows, new_row, nom_key, prenom_key):
     return "new"
 
 
+NEWSLETTER_COLUMN = "Souhaitez-vous recevoir notre newsletter ?"
+
+
+def wants_newsletter(row_dict, headers):
+    """Retourne True si la colonne newsletter vaut 'oui' (insensible à la casse et aux balises HTML)."""
+    import re
+    for h in headers:
+        # Comparaison en supprimant les éventuelles balises HTML autour du texte de la colonne
+        clean_h = re.sub(r"<[^>]+>", "", h).strip()
+        if clean_h.lower() == NEWSLETTER_COLUMN.lower():
+            return normalize(row_dict.get(h, "")) == "oui"
+    return False
+
+
 def process_excel_file(excel_path, existing_rows, fieldnames):
     """
     Lit toutes les feuilles d'un fichier Excel et retourne les nouvelles lignes à ajouter.
+    Seules les lignes avec "Oui" dans la colonne newsletter sont traitées.
     Modifie existing_rows et fieldnames sur place.
-    Retourne (new_rows, skipped_identical, skipped_conflict).
+    Retourne (new_rows, skipped_identical, skipped_conflict, skipped_no_newsletter).
     """
     wb = openpyxl.load_workbook(excel_path, read_only=True, data_only=True)
     new_rows = []
     skipped_identical = 0
     skipped_conflict = 0
+    skipped_no_newsletter = 0
 
     for sheet in wb.worksheets:
         rows_iter = sheet.iter_rows(values_only=True)
@@ -126,6 +142,11 @@ def process_excel_file(excel_path, existing_rows, fieldnames):
                 for i, h in enumerate(headers)
             }
 
+            # Ignorer les personnes qui n'ont pas accepté la newsletter
+            if not wants_newsletter(row_dict, headers):
+                skipped_no_newsletter += 1
+                continue
+
             status = check_row_status(existing_rows, row_dict, nom_key, prenom_key)
             if status == "identical":
                 skipped_identical += 1
@@ -136,7 +157,7 @@ def process_excel_file(excel_path, existing_rows, fieldnames):
                 existing_rows.append(row_dict)
 
     wb.close()
-    return new_rows, skipped_identical, skipped_conflict
+    return new_rows, skipped_identical, skipped_conflict, skipped_no_newsletter
 
 
 def run_synthesis(directory, log_callback=print):
@@ -162,18 +183,21 @@ def run_synthesis(directory, log_callback=print):
     all_new_rows = []
     total_identical = 0
     total_conflict = 0
+    total_no_newsletter = 0
 
     for excel_path in excel_files:
         log_callback(f"Traitement : {excel_path.name}")
         try:
-            new_rows, skipped_id, skipped_conf = process_excel_file(
+            new_rows, skipped_id, skipped_conf, skipped_nl = process_excel_file(
                 excel_path, existing_rows, fieldnames
             )
             all_new_rows.extend(new_rows)
             total_identical += skipped_id
             total_conflict += skipped_conf
+            total_no_newsletter += skipped_nl
             log_callback(
                 f"  → {len(new_rows)} ligne(s) ajoutée(s), "
+                f"{skipped_nl} refus newsletter ignoré(s), "
                 f"{skipped_id} doublon(s) identique(s) ignoré(s), "
                 f"{skipped_conf} conflit(s) ignoré(s)"
             )
@@ -194,7 +218,8 @@ def run_synthesis(directory, log_callback=print):
         log_callback(f"\nAucune nouvelle ligne à ajouter dans {OUTPUT_FILENAME}")
 
     log_callback(
-        f"Résumé final : {total_identical} doublon(s) identique(s) ignoré(s), "
+        f"Résumé final : {total_no_newsletter} refus newsletter ignoré(s), "
+        f"{total_identical} doublon(s) identique(s) ignoré(s), "
         f"{total_conflict} conflit(s) de données ignoré(s)"
     )
 
