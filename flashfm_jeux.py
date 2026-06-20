@@ -654,7 +654,8 @@ class FlashFMApp(tk.Tk):
         self.templates    = load_templates()
         self.participants = []
         self.winners      = []
-        self.creds_path   = tk.StringVar()
+        self.creds_path   = tk.StringVar(
+            value=find_credentials_file() or '')
 
         self._build_header()
         self._build_scroll_area()
@@ -799,9 +800,13 @@ class FlashFMApp(tk.Tk):
                  bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
         self._btn(creds_row, "📄  JSON…", self._pick_creds,
                   color="#555", font_size=9).pack(side=tk.LEFT, padx=8)
-        self.lbl_creds = tk.Label(creds_row, text="Aucun fichier",
-                                   bg=C_WHITE, fg=C_GRAY,
-                                   font=("", 10, "italic"))
+        _auto = self.creds_path.get()
+        self.lbl_creds = tk.Label(
+            creds_row,
+            text=os.path.basename(_auto) if _auto else "Aucun fichier",
+            bg=C_WHITE,
+            fg=C_DARK if _auto else C_GRAY,
+            font=("", 10, "italic"))
         self.lbl_creds.pack(side=tk.LEFT)
 
         # Info vérification
@@ -1244,6 +1249,22 @@ def save_events(events):
         json.dump(events, f, ensure_ascii=False, indent=2)
 
 
+def find_credentials_file():
+    """Cherche automatiquement un fichier service account Google dans BASE_DIR."""
+    try:
+        for fname in sorted(os.listdir(BASE_DIR)):
+            if not fname.endswith('.json'):
+                continue
+            path = os.path.join(BASE_DIR, fname)
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            if data.get('type') == 'service_account':
+                return path
+    except Exception:
+        pass
+    return None
+
+
 # ── OAuth Dropbox (refresh token permanent) ──────────────────────────────────
 
 def dropbox_get_auth_url(app_key):
@@ -1561,7 +1582,8 @@ class SportsApp(tk.Toplevel):
         self.participants = []
         self.winners     = []
         self.winner_urls = {}
-        self.creds_path  = tk.StringVar()
+        self.creds_path  = tk.StringVar(
+            value=find_credentials_file() or '')
         self.v_tab_name  = tk.StringVar()
         self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
         self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
@@ -1693,8 +1715,13 @@ class SportsApp(tk.Toplevel):
                  font=("", 10)).pack(side=tk.LEFT)
         ColorButton(cr, text="📄  JSON…", command=self._pick_creds,
                     bg="#555", font_size=9).pack(side=tk.LEFT, padx=8)
-        self.lbl_creds = tk.Label(cr, text="Aucun fichier",
-                                   bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        _auto = self.creds_path.get()
+        self.lbl_creds = tk.Label(
+            cr,
+            text=os.path.basename(_auto) if _auto else "Aucun fichier",
+            bg=C_WHITE,
+            fg=C_DARK if _auto else C_GRAY,
+            font=("", 10, "italic"))
         self.lbl_creds.pack(side=tk.LEFT)
 
         # Onglet Google Sheets
@@ -2620,7 +2647,8 @@ class SpectacleApp(tk.Toplevel):
         self.participants = []
         self.winners      = []
         self.winner_urls  = {}
-        self.creds_path   = tk.StringVar()
+        self.creds_path   = tk.StringVar(
+            value=find_credentials_file() or '')
         self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
         self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
         self.v_dbx_refresh = tk.StringVar(value=cfg.get('dropbox_refresh_token', ''))
@@ -2744,8 +2772,13 @@ class SpectacleApp(tk.Toplevel):
         cred_row.pack(fill=tk.X, pady=(0, 4))
         tk.Label(cred_row, text="Credentials Google :", bg=C_WHITE,
                  font=("", 10)).pack(side=tk.LEFT)
-        self.lbl_creds = tk.Label(cred_row, text="Aucun fichier",
-                                   bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        _auto = self.creds_path.get()
+        self.lbl_creds = tk.Label(
+            cred_row,
+            text=os.path.basename(_auto) if _auto else "Aucun fichier",
+            bg=C_WHITE,
+            fg=C_DARK if _auto else C_GRAY,
+            font=("", 10, "italic"))
         self.lbl_creds.pack(side=tk.LEFT, padx=8)
         ColorButton(cred_row, text="📂  Choisir",
                     command=self._pick_creds,
@@ -3347,18 +3380,29 @@ class SpectacleApp(tk.Toplevel):
         return None
 
     def _tpl_new(self):
-        t = TemplateEditor(self)
-        self.wait_window(t)
-        self._refresh_templates()
+        def on_save(tpl):
+            self.templates = load_templates()
+            self.templates.append(tpl)
+            save_templates(self.templates)
+            self._refresh_templates()
+        TemplateEditor(self, on_save=on_save)
 
     def _tpl_edit(self):
         tpl = self._get_tpl()
         if not tpl:
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
             return
-        t = TemplateEditor(self, tpl)
-        self.wait_window(t)
-        self._refresh_templates()
+        old_name = tpl['name']
+
+        def on_save(updated):
+            self.templates = load_templates()
+            for i, t in enumerate(self.templates):
+                if t['name'] == old_name:
+                    self.templates[i] = updated
+                    break
+            save_templates(self.templates)
+            self._refresh_templates()
+        TemplateEditor(self, template=tpl, on_save=on_save)
 
     def _tpl_del(self):
         tpl = self._get_tpl()
