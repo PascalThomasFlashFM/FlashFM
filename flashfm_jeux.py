@@ -23,9 +23,11 @@ except ImportError:
     GSPREAD_OK = False
 
 # ─── Chemins ──────────────────────────────────────────────
-BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_PATH = os.path.join(BASE_DIR, "flashfm_templates.json")
-CLUBS_PATH     = os.path.join(BASE_DIR, "flashfm_clubs.json")
+BASE_DIR              = os.path.dirname(os.path.abspath(__file__))
+TEMPLATES_PATH        = os.path.join(BASE_DIR, "flashfm_templates.json")
+CLUBS_PATH            = os.path.join(BASE_DIR, "flashfm_clubs.json")
+SPECTACLE_CONFIG_PATH = os.path.join(BASE_DIR, "flashfm_spectacle.json")
+EVENTS_PATH           = os.path.join(BASE_DIR, "flashfm_events.json")
 
 # ─── SMTP OVH ─────────────────────────────────────────────
 SMTP_SERVER    = "ssl0.ovh.net"
@@ -665,10 +667,14 @@ class FlashFMApp(tk.Tk):
                  font=("", 22, "bold"), pady=12).pack(side=tk.LEFT, padx=20)
         tk.Label(h, text="Gestionnaire de Jeux Concours",
                  bg=C_DARK, fg=C_WHITE, font=("", 12)).pack(side=tk.LEFT, padx=4)
+        ColorButton(h, text="🎭  E-Billets Spectacle",
+                    command=lambda: SpectacleApp(self),
+                    bg="#7B1FA2", fg=C_WHITE, font_size=9).pack(
+            side=tk.RIGHT, padx=4)
         ColorButton(h, text="⚽  E-Billets Sports",
                     command=lambda: SportsApp(self),
                     bg="#1A4B8C", fg=C_WHITE, font_size=9).pack(
-            side=tk.RIGHT, padx=12)
+            side=tk.RIGHT, padx=4)
 
     # ── Zone défilante ────────────────────────────────────
     def _build_scroll_area(self):
@@ -1212,6 +1218,30 @@ def load_sports_config():
 def save_sports_config(cfg):
     with open(SPORTS_CONFIG_PATH, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def load_spectacle_config():
+    if os.path.exists(SPECTACLE_CONFIG_PATH):
+        with open(SPECTACLE_CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_spectacle_config(cfg):
+    with open(SPECTACLE_CONFIG_PATH, 'w', encoding='utf-8') as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+
+def load_events():
+    if os.path.exists(EVENTS_PATH):
+        with open(EVENTS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_events(events):
+    with open(EVENTS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(events, f, ensure_ascii=False, indent=2)
 
 
 # ── OAuth Dropbox (refresh token permanent) ──────────────────────────────────
@@ -2480,6 +2510,974 @@ class SportsApp(tk.Toplevel):
             font=("Courier", 10), insertbackground=C_WHITE)
         self.log_widget.pack(fill=tk.BOTH, expand=True)
         self.log_widget.config(state=tk.DISABLED)
+
+# ══════════════════════════════════════════════════════════
+#  Export Google Sheets – variante Spectacle
+# ══════════════════════════════════════════════════════════
+
+def spectacle_export_to_sheet(creds_path, tab_name, winners, game_info, winner_urls):
+    """
+    Crée un onglet pour le spectacle avec colonne lien e-billet (style Flash FM rouge).
+    La 'liste des gagnants' est déjà mise à jour par draw_with_checks pendant le tirage.
+    """
+    sh = _sheets_client(creds_path)
+    try:
+        sh.del_worksheet(sh.worksheet(tab_name))
+    except gspread.exceptions.WorksheetNotFound:
+        pass
+    ws = sh.add_worksheet(title=tab_name, rows=len(winners) + 5, cols=6)
+
+    title  = (f"{game_info['nom_jeu']}  –  "
+              f"{game_info['date']}  –  {game_info['lieu']}")
+    header = ["Nom", "Prénom", "Ville", "Email", "Téléphone", "Lien e-billet"]
+    data   = [
+        [w['nom'], w['prenom'], w.get('ville', ''),
+         w['email'], format_phone(w['phone']),
+         winner_urls.get(w['email'], '')]
+        for w in winners
+    ]
+    ws.update("A1", [[title, "", "", "", "", ""], ["", "", "", "", "", ""],
+                     header] + data)
+
+    sid    = ws.id
+    n_data = len(winners)
+    _RED   = {"red": 0.75, "green": 0.05, "blue": 0.05}
+    _NAVY  = {"red": 0.13, "green": 0.24, "blue": 0.49}
+    _WHITE = {"red": 1.0,  "green": 1.0,  "blue": 1.0}
+    _GRAY  = {"red": 0.75, "green": 0.75, "blue": 0.75}
+    _ALT   = {"red": 0.98, "green": 0.95, "blue": 0.99}
+
+    def _bdr(color, w=1):
+        s = {"style": "SOLID", "width": w, "color": color}
+        return {"top": s, "bottom": s, "left": s, "right": s}
+
+    sh.batch_update({"requests": [
+        {"mergeCells": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "mergeType": "MERGE_ALL"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _RED, "horizontalAlignment": "CENTER",
+                "verticalAlignment": "MIDDLE",
+                "textFormat": {"bold": True, "fontSize": 13, "foregroundColor": _WHITE}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)"}},
+        {"updateDimensionProperties": {
+            "range": {"sheetId": sid, "dimension": "ROWS",
+                      "startIndex": 0, "endIndex": 1},
+            "properties": {"pixelSize": 42}, "fields": "pixelSize"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 2, "endRowIndex": 3,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": _NAVY, "horizontalAlignment": "CENTER",
+                "verticalAlignment": "MIDDLE",
+                "textFormat": {"bold": True, "fontSize": 10, "foregroundColor": _WHITE},
+                "borders": _bdr(_NAVY, 2)}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat,borders)"}},
+        {"repeatCell": {
+            "range": {"sheetId": sid, "startRowIndex": 3, "endRowIndex": 3 + n_data,
+                      "startColumnIndex": 0, "endColumnIndex": 6},
+            "cell": {"userEnteredFormat": {
+                "horizontalAlignment": "CENTER", "verticalAlignment": "MIDDLE",
+                "textFormat": {"fontSize": 10}, "borders": _bdr(_GRAY)}},
+            "fields": "userEnteredFormat(horizontalAlignment,verticalAlignment,textFormat,borders)"}},
+        {"addBanding": {
+            "bandedRange": {
+                "range": {"sheetId": sid, "startRowIndex": 3, "endRowIndex": 3 + n_data,
+                          "startColumnIndex": 0, "endColumnIndex": 6},
+                "rowProperties": {
+                    "firstBandColorStyle":  {"rgbColor": _WHITE},
+                    "secondBandColorStyle": {"rgbColor": _ALT}}}}},
+        {"autoResizeDimensions": {
+            "dimensions": {"sheetId": sid, "dimension": "COLUMNS",
+                           "startIndex": 0, "endIndex": 5}}},
+    ]})
+    return (f"https://docs.google.com/spreadsheets/d/"
+            f"{SPREADSHEET_ID}/edit#gid={sid}")
+
+
+# ══════════════════════════════════════════════════════════
+#  SpectacleApp – E-Billets Spectacle
+# ══════════════════════════════════════════════════════════
+
+class SpectacleApp(tk.Toplevel):
+    C_SPECTACLE = "#7B1FA2"  # violet
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Flash FM – E-Billets Spectacle")
+        self.geometry("840x1060")
+        self.minsize(700, 800)
+        self.configure(bg=C_LIGHT)
+        self.resizable(True, True)
+
+        cfg               = load_spectacle_config()
+        self.events       = load_events()
+        self.templates    = load_templates()
+        self.participants = []
+        self.winners      = []
+        self.winner_urls  = {}
+        self.creds_path   = tk.StringVar()
+        self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
+        self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
+        self.v_dbx_refresh = tk.StringVar(value=cfg.get('dropbox_refresh_token', ''))
+
+        self._build_header()
+        self._build_scroll_area()
+
+    def _build_header(self):
+        h = tk.Frame(self, bg=self.C_SPECTACLE)
+        h.pack(fill=tk.X)
+        tk.Label(h, text="FLASH FM", bg=self.C_SPECTACLE, fg=C_RED,
+                 font=("", 20, "bold"), pady=10).pack(side=tk.LEFT, padx=20)
+        tk.Label(h, text="E-Billets Spectacle",
+                 bg=self.C_SPECTACLE, fg=C_WHITE, font=("", 12)).pack(side=tk.LEFT)
+
+    def _build_scroll_area(self):
+        container = tk.Frame(self, bg=C_LIGHT)
+        container.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(container, bg=C_LIGHT, highlightthickness=0)
+        sb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._inner = tk.Frame(canvas, bg=C_LIGHT)
+        win_id = canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._inner.bind("<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+            lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+            lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+        self._build_steps()
+        tk.Frame(self._inner, bg=C_LIGHT, height=24).pack()
+
+    def _section(self, title, number):
+        outer = tk.Frame(self._inner, bg=C_LIGHT)
+        outer.pack(fill=tk.X, padx=18, pady=(10, 2))
+        hdr = tk.Frame(outer, bg=self.C_SPECTACLE)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text=f"   {number}   {title}", bg=self.C_SPECTACLE,
+                 fg=C_WHITE, font=("", 11, "bold"), anchor="w",
+                 pady=7).pack(fill=tk.X)
+        body = tk.Frame(outer, bg=C_WHITE, bd=1, relief=tk.GROOVE)
+        body.pack(fill=tk.X)
+        inner = tk.Frame(body, bg=C_WHITE, padx=16, pady=12)
+        inner.pack(fill=tk.X)
+        return inner
+
+    def _log(self, msg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_widget.config(state=tk.NORMAL)
+        self.log_widget.insert(tk.END, f"[{ts}]  {msg}\n")
+        self.log_widget.see(tk.END)
+        self.log_widget.config(state=tk.DISABLED)
+
+    def _build_steps(self):
+        self._build_step1()
+        self._build_step2()
+        self._build_step3()
+        self._build_step4()
+        self._build_step5()
+        self._build_step6()
+        self._build_step7()
+        self._build_step8()
+        self._build_log()
+
+    # ① Paramètres du spectacle
+    def _build_step1(self):
+        f = self._section("Paramètres du spectacle", "①")
+        self.gv = {}
+        for i, (lbl, key, ph) in enumerate([
+            ("Nom du jeu :",    "nom_jeu", "Grand Jeu Flash FM"),
+            ("Date et heure :", "date",    "samedi 6 juin 2026 à 20h00"),
+            ("Lieu :",          "lieu",    "Zénith Limoges Métropole"),
+        ]):
+            tk.Label(f, text=lbl, bg=C_WHITE, width=18, anchor="w",
+                     font=("", 10)).grid(row=i, column=0, sticky="w", pady=4)
+            var = tk.StringVar(value=ph)
+            self.gv[key] = var
+            ttk.Entry(f, textvariable=var, width=52).grid(
+                row=i, column=1, sticky="ew", padx=8)
+        tk.Label(f, text="Nombre de gagnants :", bg=C_WHITE, width=18,
+                 anchor="w", font=("", 10)).grid(row=3, column=0, sticky="w", pady=4)
+        self.nb_winners = tk.IntVar(value=5)
+        ttk.Spinbox(f, from_=1, to=100, textvariable=self.nb_winners,
+                    width=6, font=("", 11)).grid(row=3, column=1, sticky="w", padx=8)
+        f.columnconfigure(1, weight=1)
+
+    # ② Fichier CSV participants
+    def _build_step2(self):
+        f = self._section("Fichier CSV des participants", "②")
+        row = tk.Frame(f, bg=C_WHITE)
+        row.pack(fill=tk.X)
+        ColorButton(row, text="📂   Choisir le fichier CSV",
+                    command=self._pick_csv,
+                    bg=self.C_SPECTACLE, font_size=10).pack(side=tk.LEFT)
+        self.lbl_csv = tk.Label(row, text="Aucun fichier sélectionné",
+                                 bg=C_WHITE, fg=C_GRAY, font=("", 10))
+        self.lbl_csv.pack(side=tk.LEFT, padx=12)
+
+    def _pick_csv(self):
+        path = filedialog.askopenfilename(
+            title="Fichier CSV participants",
+            filetypes=[("CSV", "*.csv"), ("Tous", "*.*")])
+        if not path:
+            return
+        try:
+            self.participants = parse_csv(path)
+            self.lbl_csv.config(
+                text=f"{os.path.basename(path)} — {len(self.participants)} participant(s)",
+                fg=C_DARK, font=("", 10))
+            self._log(f"CSV chargé : {len(self.participants)} participant(s) uniques.")
+        except Exception as e:
+            messagebox.showerror("Erreur CSV", str(e), parent=self)
+
+    # ③ Configuration Google Sheets & Dropbox
+    def _build_step3(self):
+        f = self._section("Configuration Google Sheets & Dropbox", "③")
+
+        cred_row = tk.Frame(f, bg=C_WHITE)
+        cred_row.pack(fill=tk.X, pady=(0, 4))
+        tk.Label(cred_row, text="Credentials Google :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        self.lbl_creds = tk.Label(cred_row, text="Aucun fichier",
+                                   bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
+        self.lbl_creds.pack(side=tk.LEFT, padx=8)
+        ColorButton(cred_row, text="📂  Choisir",
+                    command=self._pick_creds,
+                    bg=self.C_SPECTACLE, font_size=9).pack(side=tk.LEFT)
+
+        tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 6))
+        tk.Label(f, text="Connexion Dropbox (token permanent) :",
+                 bg=C_WHITE, font=("", 10, "bold")).pack(anchor="w")
+        tk.Label(f,
+                 text="Sur https://www.dropbox.com/developers/apps → votre app → "
+                      "onglet Settings → copiez App key et App secret.",
+                 bg=C_WHITE, fg=C_GRAY, font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(2, 6))
+
+        for label, var, show in [
+            ("App key :",    self.v_dbx_key,    ""),
+            ("App secret :", self.v_dbx_secret, "*"),
+        ]:
+            r = tk.Frame(f, bg=C_WHITE)
+            r.pack(fill=tk.X, pady=2)
+            tk.Label(r, text=label, bg=C_WHITE, width=12,
+                     anchor="w", font=("", 10)).pack(side=tk.LEFT)
+            ttk.Entry(r, textvariable=var, width=36,
+                      show=show, font=("", 9)).pack(side=tk.LEFT)
+
+        row_auth = tk.Frame(f, bg=C_WHITE)
+        row_auth.pack(fill=tk.X, pady=(6, 2))
+        ColorButton(row_auth, text="🌐  Étape 1 : Ouvrir l'autorisation Dropbox",
+                    command=self._dbx_open_auth,
+                    bg=self.C_SPECTACLE, font_size=9).pack(side=tk.LEFT)
+
+        row_code = tk.Frame(f, bg=C_WHITE)
+        row_code.pack(fill=tk.X, pady=2)
+        tk.Label(row_code, text="Code obtenu :", bg=C_WHITE, width=14,
+                 anchor="w", font=("", 10)).pack(side=tk.LEFT)
+        self.v_dbx_code = tk.StringVar()
+        ttk.Entry(row_code, textvariable=self.v_dbx_code,
+                  width=34, font=("", 9)).pack(side=tk.LEFT)
+        ColorButton(row_code, text="✅  Étape 2 : Valider",
+                    command=self._dbx_validate_code,
+                    bg="#2e7d32", font_size=9).pack(side=tk.LEFT, padx=8)
+
+        self.lbl_dbx_status = tk.Label(f, text="", bg=C_WHITE,
+                                        font=("", 9, "italic"))
+        self.lbl_dbx_status.pack(anchor="w", pady=(2, 0))
+        self._dbx_refresh_status()
+
+        tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 4))
+        tk.Label(f, text=f"Dossier racine : {DEFAULT_ROOT}",
+                 bg=C_WHITE, fg=C_GRAY, font=("", 9, "italic")).pack(anchor="w")
+
+    def _pick_creds(self):
+        path = filedialog.askopenfilename(
+            title="Credentials Google (.json)",
+            filetypes=[("JSON", "*.json"), ("Tous", "*.*")])
+        if path:
+            self.creds_path.set(path)
+            self.lbl_creds.config(text=os.path.basename(path),
+                                   fg=C_DARK, font=("", 10))
+
+    def _dbx_refresh_status(self):
+        if self.v_dbx_refresh.get().strip():
+            self.lbl_dbx_status.config(
+                text="✅  Connexion Dropbox configurée (token permanent actif).",
+                fg=C_GREEN)
+        else:
+            self.lbl_dbx_status.config(
+                text="⚠  Pas encore autorisé — suivez les étapes ci-dessus.",
+                fg="#e65100")
+
+    def _dbx_open_auth(self):
+        app_key = self.v_dbx_key.get().strip()
+        if not app_key:
+            messagebox.showwarning("App key manquante",
+                "Saisissez l'App key Dropbox.", parent=self)
+            return
+        import webbrowser
+        webbrowser.open(dropbox_get_auth_url(app_key))
+        self._log("Navigateur ouvert → autorisez l'application puis collez le code.")
+
+    def _dbx_validate_code(self):
+        app_key    = self.v_dbx_key.get().strip()
+        app_secret = self.v_dbx_secret.get().strip()
+        code       = self.v_dbx_code.get().strip()
+        if not (app_key and app_secret and code):
+            messagebox.showwarning("Champs manquants",
+                "App key, App secret et code sont requis.", parent=self)
+            return
+        try:
+            resp = dropbox_exchange_code(app_key, app_secret, code)
+        except Exception as e:
+            messagebox.showerror("Erreur OAuth", str(e), parent=self)
+            return
+        refresh_token = resp.get('refresh_token', '')
+        if not refresh_token:
+            messagebox.showerror("Erreur OAuth",
+                f"Pas de refresh_token :\n{resp}", parent=self)
+            return
+        self.v_dbx_refresh.set(refresh_token)
+        cfg = load_spectacle_config()
+        cfg['dropbox_app_key']       = app_key
+        cfg['dropbox_app_secret']    = app_secret
+        cfg['dropbox_refresh_token'] = refresh_token
+        save_spectacle_config(cfg)
+        self.v_dbx_code.set('')
+        self._dbx_refresh_status()
+        self._log("✅  Token permanent Dropbox enregistré.")
+
+    def _get_dropbox_access_token(self):
+        key     = self.v_dbx_key.get().strip()
+        secret  = self.v_dbx_secret.get().strip()
+        refresh = self.v_dbx_refresh.get().strip()
+        if not (key and secret and refresh):
+            return None
+        return dropbox_refresh_access_token(key, secret, refresh)
+
+    # ④ Type d'événements & Événements
+    def _build_step4(self):
+        f = self._section("Type d'événements & Événements", "④")
+        tk.Label(f,
+                 text=f"Les e-billets sont cherchés dans {DEFAULT_ROOT}"
+                      "/[type]/[événement]/",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+
+        cols = tk.Frame(f, bg=C_WHITE)
+        cols.pack(fill=tk.X)
+
+        left = tk.Frame(cols, bg=C_WHITE)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
+        tk.Label(left, text="Type d'événements :", bg=C_WHITE,
+                 font=("", 10, "bold")).pack(anchor="w")
+        self.v_type_evt = tk.StringVar()
+        self.cb_type = ttk.Combobox(left, textvariable=self.v_type_evt,
+                                     state="readonly", width=22, font=("", 10))
+        self.cb_type.pack(fill=tk.X, pady=(4, 4))
+        self.cb_type.bind("<<ComboboxSelected>>", lambda e: self._on_type_change())
+        btn_t = tk.Frame(left, bg=C_WHITE)
+        btn_t.pack(fill=tk.X)
+        for txt, cmd in [("＋ Ajouter", self._add_type),
+                          ("✎ Renommer", self._rename_type),
+                          ("✕ Supprimer", self._del_type)]:
+            ColorButton(btn_t, text=txt, command=cmd,
+                        bg=self.C_SPECTACLE, font_size=8,
+                        padx=8, pady=4).pack(side=tk.LEFT, padx=2, pady=2)
+
+        right = tk.Frame(cols, bg=C_WHITE)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(8, 0))
+        tk.Label(right, text="Événement :", bg=C_WHITE,
+                 font=("", 10, "bold")).pack(anchor="w")
+        self.v_event = tk.StringVar()
+        self.cb_event = ttk.Combobox(right, textvariable=self.v_event,
+                                      state="readonly", width=22, font=("", 10))
+        self.cb_event.pack(fill=tk.X, pady=(4, 4))
+        self.cb_event.bind("<<ComboboxSelected>>",
+                            lambda e: self._update_tickets_count())
+        btn_e = tk.Frame(right, bg=C_WHITE)
+        btn_e.pack(fill=tk.X)
+        for txt, cmd in [("＋ Ajouter", self._add_event),
+                          ("✎ Renommer", self._rename_event),
+                          ("✕ Supprimer", self._del_event)]:
+            ColorButton(btn_e, text=txt, command=cmd,
+                        bg=self.C_SPECTACLE, font_size=8,
+                        padx=8, pady=4).pack(side=tk.LEFT, padx=2, pady=2)
+
+        self.lbl_tickets = tk.Label(f, text="", bg=C_WHITE,
+                                     fg=C_GRAY, font=("", 9, "italic"))
+        self.lbl_tickets.pack(anchor="w", pady=(8, 0))
+        self._refresh_types()
+
+    def _refresh_types(self):
+        types = sorted(self.events.keys())
+        self.cb_type['values'] = types
+        if types and not self.v_type_evt.get():
+            self.v_type_evt.set(types[0])
+            self._on_type_change()
+
+    def _on_type_change(self):
+        t = self.v_type_evt.get()
+        evts = sorted(self.events.get(t, []))
+        self.cb_event['values'] = evts
+        self.v_event.set(evts[0] if evts else '')
+        self._update_tickets_count()
+
+    def _refresh_events(self):
+        t = self.v_type_evt.get()
+        evts = sorted(self.events.get(t, []))
+        self.cb_event['values'] = evts
+        if evts and not self.v_event.get():
+            self.v_event.set(evts[0])
+        self._update_tickets_count()
+
+    def _update_tickets_count(self):
+        t  = self.v_type_evt.get()
+        ev = self.v_event.get()
+        if not (t and ev):
+            self.lbl_tickets.config(text="")
+            return
+        folder = os.path.join(DEFAULT_ROOT, t, ev)
+        if not os.path.isdir(folder):
+            self.lbl_tickets.config(
+                text=f"⚠  Dossier introuvable : {folder}", fg=C_RED)
+            return
+        tickets = self._list_tickets(folder)
+        needed  = self.nb_winners.get() * 2
+        color   = C_GREEN if len(tickets) >= needed else C_RED
+        self.lbl_tickets.config(
+            text=f"{len(tickets)} e-billet(s) dans {folder}  (besoin : {needed})",
+            fg=color)
+
+    def _list_tickets(self, folder):
+        exts = {'.pdf', '.pkpass', '.png', '.jpg', '.jpeg'}
+        return sorted([f for f in os.listdir(folder)
+                       if os.path.isfile(os.path.join(folder, f))
+                       and os.path.splitext(f)[1].lower() in exts
+                       and not f.startswith('.')])
+
+    def _ask_name(self, title, prompt, initial=""):
+        d = tk.Toplevel(self)
+        d.title(title)
+        d.resizable(False, False)
+        d.grab_set()
+        tk.Label(d, text=prompt, padx=16, pady=10).pack()
+        var = tk.StringVar(value=initial)
+        e = ttk.Entry(d, textvariable=var, width=30)
+        e.pack(padx=16, pady=(0, 10))
+        e.focus_set()
+        result = [None]
+
+        def ok(ev=None):
+            result[0] = var.get().strip()
+            d.destroy()
+
+        e.bind("<Return>", ok)
+        ColorButton(d, text="OK", command=ok, bg=self.C_SPECTACLE).pack(pady=(0, 12))
+        d.wait_window()
+        return result[0]
+
+    def _add_type(self):
+        name = self._ask_name("Nouveau type", "Nom du type d'événements :")
+        if not name:
+            return
+        if name in self.events:
+            messagebox.showwarning("Doublon", "Ce type existe déjà.", parent=self)
+            return
+        self.events[name] = []
+        save_events(self.events)
+        self._refresh_types()
+        self.v_type_evt.set(name)
+        self._on_type_change()
+        os.makedirs(os.path.join(DEFAULT_ROOT, name), exist_ok=True)
+
+    def _rename_type(self):
+        old = self.v_type_evt.get()
+        if not old:
+            return
+        new = self._ask_name("Renommer", "Nouveau nom :", initial=old)
+        if not new or new == old:
+            return
+        self.events[new] = self.events.pop(old)
+        save_events(self.events)
+        src = os.path.join(DEFAULT_ROOT, old)
+        dst = os.path.join(DEFAULT_ROOT, new)
+        if os.path.isdir(src):
+            os.rename(src, dst)
+        self._refresh_types()
+        self.v_type_evt.set(new)
+        self._on_type_change()
+
+    def _del_type(self):
+        t = self.v_type_evt.get()
+        if not t:
+            return
+        if not messagebox.askyesno("Supprimer",
+                f"Supprimer le type « {t} » ?", parent=self):
+            return
+        self.events.pop(t, None)
+        save_events(self.events)
+        self._refresh_types()
+
+    def _add_event(self):
+        t = self.v_type_evt.get()
+        if not t:
+            messagebox.showwarning("Type manquant",
+                "Sélectionnez d'abord un type d'événement.", parent=self)
+            return
+        name = self._ask_name("Nouvel événement", "Nom de l'événement :")
+        if not name:
+            return
+        if name in self.events.get(t, []):
+            messagebox.showwarning("Doublon", "Cet événement existe déjà.", parent=self)
+            return
+        self.events.setdefault(t, []).append(name)
+        save_events(self.events)
+        os.makedirs(os.path.join(DEFAULT_ROOT, t, name), exist_ok=True)
+        self._refresh_events()
+        self.v_event.set(name)
+        self._update_tickets_count()
+
+    def _rename_event(self):
+        t   = self.v_type_evt.get()
+        old = self.v_event.get()
+        if not (t and old):
+            return
+        new = self._ask_name("Renommer", "Nouveau nom :", initial=old)
+        if not new or new == old:
+            return
+        lst = self.events.get(t, [])
+        if old in lst:
+            lst[lst.index(old)] = new
+        save_events(self.events)
+        src = os.path.join(DEFAULT_ROOT, t, old)
+        dst = os.path.join(DEFAULT_ROOT, t, new)
+        if os.path.isdir(src):
+            os.rename(src, dst)
+        self._refresh_events()
+        self.v_event.set(new)
+        self._update_tickets_count()
+
+    def _del_event(self):
+        t  = self.v_type_evt.get()
+        ev = self.v_event.get()
+        if not (t and ev):
+            return
+        if not messagebox.askyesno("Supprimer",
+                f"Supprimer l'événement « {ev} » ?", parent=self):
+            return
+        lst = self.events.get(t, [])
+        if ev in lst:
+            lst.remove(ev)
+        save_events(self.events)
+        self._refresh_events()
+
+    # ⑤ Tirage au sort
+    def _build_step5(self):
+        f = self._section("Tirage au sort", "⑤")
+        tk.Label(f,
+                 text="Vérifie les joueurs bannis et les gains récents (< 6 mois) "
+                      "dans « liste des gagnants » du Google Sheets. "
+                      "Les gagnants sont enregistrés dans cet onglet dès le tirage.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 8))
+        ColorButton(f, text="🎲   LANCER LE TIRAGE AU SORT",
+                    command=self._do_draw,
+                    bg=self.C_SPECTACLE, font_size=12).pack(anchor="w")
+        cols = ("nom", "prenom", "ville", "email", "telephone")
+        self.tree = ttk.Treeview(f, columns=cols, show="headings", height=6)
+        for col, lbl, w in [("nom","Nom",120), ("prenom","Prénom",100),
+                              ("ville","Ville",110), ("email","Email",180),
+                              ("telephone","Téléphone",110)]:
+            self.tree.heading(col, text=lbl)
+            self.tree.column(col, width=w, minwidth=60)
+        self.tree.pack(fill=tk.X, pady=(10, 0))
+        self.lbl_draw = tk.Label(f, text="", bg=C_WHITE, font=("", 10))
+        self.lbl_draw.pack(anchor="w", pady=(6, 0))
+
+    def _do_draw(self):
+        if not self.participants:
+            messagebox.showwarning("CSV", "Chargez d'abord le fichier CSV (②).",
+                                   parent=self)
+            return
+        if not self.creds_path.get():
+            messagebox.showwarning("Credentials",
+                "Sélectionnez les credentials Google (③).", parent=self)
+            return
+        n = self.nb_winners.get()
+        self.lbl_draw.config(text="⏳  Tirage en cours…", fg=C_GRAY)
+        self.update()
+
+        def done_cb(winners):
+            self.winners     = winners
+            self.winner_urls = {}
+            self.after(0, lambda: self._draw_done(winners))
+
+        def error_cb(msg):
+            self.after(0, lambda: messagebox.showwarning("Tirage", msg, parent=self))
+
+        threading.Thread(
+            target=draw_with_checks,
+            args=(self.participants, n, self.creds_path.get(),
+                  self.gv['nom_jeu'].get(),
+                  lambda m: self.after(0, lambda mm=m: self._log(mm)),
+                  done_cb, error_cb),
+            daemon=True).start()
+
+    def _draw_done(self, winners):
+        self.tree.delete(*self.tree.get_children())
+        for w in winners:
+            self.tree.insert("", tk.END, values=(
+                w['nom'], w['prenom'], w.get('ville', ''),
+                w['email'], format_phone(w['phone'])))
+        self.lbl_draw.config(
+            text=f"✓  {len(winners)} gagnant(s) tiré(s) au sort.", fg=C_GREEN)
+        self._log(f"Tirage terminé : {len(winners)} gagnant(s).")
+
+    # ⑥ Distribution des e-billets
+    def _build_step6(self):
+        f = self._section("Distribution des e-billets", "⑥")
+        tk.Label(f,
+                 text="Crée un sous-dossier par gagnant dans le dossier de l'événement, "
+                      "déplace 2 billets par gagnant et récupère le lien Dropbox.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+        self.btn_distrib = ColorButton(
+            f, text="📂   CRÉER LES DOSSIERS & DISTRIBUER LES BILLETS",
+            command=self._do_distribute, bg=self.C_SPECTACLE, font_size=11)
+        self.btn_distrib.pack(anchor="w")
+        self.lbl_distrib = tk.Label(f, text="", bg=C_WHITE, font=("", 10))
+        self.lbl_distrib.pack(anchor="w", pady=(6, 0))
+
+    def _do_distribute(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage manquant",
+                "Effectuez d'abord le tirage (⑤).", parent=self)
+            return
+        type_evt = self.v_type_evt.get()
+        event    = self.v_event.get()
+        if not (type_evt and event):
+            messagebox.showwarning("Événement manquant",
+                "Sélectionnez type et événement (④).", parent=self)
+            return
+        tickets_dir = os.path.join(DEFAULT_ROOT, type_evt, event)
+        if not os.path.isdir(tickets_dir):
+            messagebox.showerror("Dossier introuvable",
+                f"Dossier introuvable :\n{tickets_dir}", parent=self)
+            return
+        tickets = self._list_tickets(tickets_dir)
+        needed  = len(self.winners) * 2
+        if len(tickets) < needed:
+            messagebox.showerror("E-billets insuffisants",
+                f"{needed} billets requis, {len(tickets)} disponible(s).", parent=self)
+            return
+        if not messagebox.askyesno("Confirmation",
+                f"Créer {len(self.winners)} dossier(s) et déplacer "
+                f"{needed} e-billets ?\n\nDossier : {tickets_dir}", parent=self):
+            return
+
+        self.btn_distrib.config(state=tk.DISABLED, text="⏳  Distribution…")
+        self.lbl_distrib.config(text="Distribution en cours…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            errors = []
+            token  = None
+            try:
+                token = self._get_dropbox_access_token()
+            except Exception as e_tok:
+                self.after(0, lambda m=f"⚠ Token Dropbox : {e_tok}": self._log(m))
+
+            for i, winner in enumerate(self.winners):
+                folder_name = f"{winner['prenom']} {winner['nom']}"
+                winner_dir  = os.path.join(tickets_dir, folder_name)
+                try:
+                    os.makedirs(winner_dir, exist_ok=True)
+                    for j in range(2):
+                        shutil.move(
+                            os.path.join(tickets_dir, tickets[i * 2 + j]),
+                            os.path.join(winner_dir,  tickets[i * 2 + j]))
+                    self.after(0, lambda m=f"✓  {folder_name} — billets déplacés": self._log(m))
+                except Exception as e:
+                    errors.append(folder_name)
+                    self.after(0, lambda m=f"✗  {folder_name} : {e}": self._log(m))
+                    continue
+
+                url = ''
+                if token:
+                    try:
+                        api_path = local_to_dropbox_api_path(winner_dir)
+                        if api_path:
+                            for attempt in range(1, 6):
+                                try:
+                                    url = get_or_create_dropbox_link(token, api_path)
+                                    self.after(0, lambda m=f"   🔗 {folder_name} → {url}": self._log(m))
+                                    break
+                                except RuntimeError as e_r:
+                                    if 'not_found' in str(e_r) and attempt < 5:
+                                        self.after(0, lambda m=f"   ⏳ Sync Dropbox tentative {attempt}/5…": self._log(m))
+                                        time.sleep(4)
+                                    else:
+                                        raise
+                        else:
+                            self.after(0, lambda m=f"   ⚠ {folder_name} : chemin Dropbox introuvable": self._log(m))
+                    except Exception as e_dbx:
+                        self.after(0, lambda m=f"   ✗ Dropbox {folder_name} : {e_dbx}": self._log(m))
+                self.winner_urls[winner['email']] = url
+
+            def finish():
+                self.btn_distrib.config(state=tk.NORMAL,
+                    text="📂   CRÉER LES DOSSIERS & DISTRIBUER LES BILLETS")
+                if errors:
+                    self.lbl_distrib.config(
+                        text=f"✗  {len(errors)} erreur(s) — voir journal", fg=C_RED)
+                else:
+                    self.lbl_distrib.config(
+                        text=f"✓  {len(self.winners)} dossier(s) créé(s), billets distribués",
+                        fg=C_GREEN)
+            self.after(0, finish)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ⑦ Export Google Sheets
+    def _build_step7(self):
+        f = self._section("Export Google Sheets", "⑦")
+        tk.Label(f,
+                 text="Crée un nouvel onglet pour ce spectacle dans le Google Sheets. "
+                      "L'onglet « liste des gagnants » a déjà été mis à jour lors du tirage.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+        ColorButton(f, text="📊   EXPORTER VERS GOOGLE SHEETS",
+                    command=self._do_export_sheet,
+                    bg=self.C_SPECTACLE, font_size=11).pack(anchor="w")
+        self.lbl_export = tk.Label(f, text="", bg=C_WHITE, font=("", 10))
+        self.lbl_export.pack(anchor="w", pady=(6, 0))
+
+    def _do_export_sheet(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage",
+                "Effectuez d'abord le tirage (⑤).", parent=self)
+            return
+        if not self.creds_path.get():
+            messagebox.showwarning("Credentials",
+                "Sélectionnez les credentials Google (③).", parent=self)
+            return
+        nom_jeu = self.gv['nom_jeu'].get().strip()
+        date    = self.gv['date'].get().strip()
+        lieu    = self.gv['lieu'].get().strip()
+        now     = datetime.now()
+        mois    = ["janvier","février","mars","avril","mai","juin","juillet",
+                   "août","septembre","octobre","novembre","décembre"][now.month - 1]
+        tab_name = f"{nom_jeu} {mois} {now.year}"
+
+        self.lbl_export.config(text="⏳  Export en cours…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                url = spectacle_export_to_sheet(
+                    self.creds_path.get(), tab_name, self.winners,
+                    {'nom_jeu': nom_jeu, 'date': date, 'lieu': lieu},
+                    self.winner_urls)
+                self.after(0, lambda: self.lbl_export.config(
+                    text=f"✓  Onglet « {tab_name} » créé.", fg=C_GREEN))
+                self.after(0, lambda: self._log(f"Export Sheets OK → {url}"))
+            except Exception as e:
+                self.after(0, lambda: self.lbl_export.config(
+                    text=f"✗  Erreur : {e}", fg=C_RED))
+                self.after(0, lambda: self._log(f"✗ Export Sheets : {e}"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ⑧ Modèle email & envoi
+    def _build_step8(self):
+        f = self._section("Modèle d'email & Envoi aux gagnants", "⑧")
+        tk.Label(f, text="Variable supplémentaire disponible : {lien_dropbox}",
+                 bg=C_WHITE, fg="#666", font=("", 9)).pack(anchor="w", pady=(0, 6))
+
+        tpl_row = tk.Frame(f, bg=C_WHITE)
+        tpl_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(tpl_row, text="Modèle :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        self.v_tpl = tk.StringVar()
+        self.cb_tpl = ttk.Combobox(tpl_row, textvariable=self.v_tpl,
+                                    state="readonly", width=28, font=("", 10))
+        self.cb_tpl.pack(side=tk.LEFT, padx=8)
+
+        btn_row = tk.Frame(f, bg=C_WHITE)
+        btn_row.pack(fill=tk.X, pady=(0, 10))
+        for txt, cmd in [("＋ Nouveau", self._tpl_new),
+                          ("✎ Modifier", self._tpl_edit),
+                          ("✕ Supprimer", self._tpl_del)]:
+            ColorButton(btn_row, text=txt, command=cmd,
+                        bg=self.C_SPECTACLE, font_size=9,
+                        padx=10, pady=5).pack(side=tk.LEFT, padx=4)
+
+        send_row = tk.Frame(f, bg=C_WHITE)
+        send_row.pack(fill=tk.X, pady=(4, 0))
+        ColorButton(send_row, text=f"📧   Test → {TEST_EMAIL}",
+                    command=self._send_test,
+                    bg=C_BLUE, font_size=11).pack(side=tk.LEFT, padx=(0, 12))
+        ColorButton(send_row, text="🚀   Envoyer aux gagnants",
+                    command=self._send_all,
+                    bg=C_GREEN, font_size=11).pack(side=tk.LEFT)
+        self.lbl_send = tk.Label(f, text="", bg=C_WHITE, fg=C_GREEN, font=("", 10))
+        self.lbl_send.pack(anchor="w", pady=(8, 0))
+        self._refresh_templates()
+
+    def _refresh_templates(self):
+        self.templates = load_templates()
+        names = [t['name'] for t in self.templates]
+        self.cb_tpl['values'] = names
+        if names and not self.v_tpl.get():
+            self.v_tpl.set(names[0])
+
+    def _get_tpl(self):
+        name = self.v_tpl.get()
+        for t in self.templates:
+            if t['name'] == name:
+                return t
+        return None
+
+    def _tpl_new(self):
+        t = TemplateEditor(self)
+        self.wait_window(t)
+        self._refresh_templates()
+
+    def _tpl_edit(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
+            return
+        t = TemplateEditor(self, tpl)
+        self.wait_window(t)
+        self._refresh_templates()
+
+    def _tpl_del(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            return
+        if not messagebox.askyesno("Supprimer",
+                f"Supprimer « {tpl['name']} » ?", parent=self):
+            return
+        self.templates = [t for t in self.templates if t['name'] != tpl['name']]
+        save_templates(self.templates)
+        self._refresh_templates()
+
+    def _variables(self, prenom="Pascal", nom="Thomas", winner=None):
+        v = {
+            'nom_jeu': self.gv['nom_jeu'].get(),
+            'date':    self.gv['date'].get(),
+            'lieu':    self.gv['lieu'].get(),
+            'prenom':  prenom,
+            'nom':     nom,
+            'lien_dropbox': (self.winner_urls.get(winner['email'], '')
+                             if winner else '(lien dropbox)'),
+        }
+        return v
+
+    def _send_test(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
+            return
+        items = ([(self._variables(prenom=w['prenom'], nom=w['nom'], winner=w), w)
+                  for w in self.winners]
+                 if self.winners else [(self._variables(), None)])
+        self.lbl_send.config(
+            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            ok, errs = 0, []
+            for v, w in items:
+                try:
+                    send_smtp(TEST_EMAIL,
+                              f"[TEST] {apply_vars(tpl['subject'], v)}",
+                              apply_vars(tpl['html'],  v),
+                              apply_vars(tpl['plain'], v))
+                    ok += 1
+                    name = f"{w['prenom']} {w['nom']}" if w else "test"
+                    self.after(0, lambda n=name: self._log(
+                        f"✓  Test ({n}) → {TEST_EMAIL}"))
+                except Exception as e:
+                    errs.append(str(e))
+                    self.after(0, lambda err=str(e): self._log(
+                        f"✗  Erreur SMTP : {err}"))
+
+            color = C_GREEN if not errs else C_RED
+            msg   = (f"✓  {ok} mail(s) de test envoyé(s) à {TEST_EMAIL}"
+                     if not errs else f"⚠  {len(errs)} erreur(s) — voir journal")
+            self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _send_all(self):
+        if not self.winners:
+            messagebox.showwarning("Tirage",
+                "Effectuez d'abord le tirage (⑤).", parent=self)
+            return
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
+            return
+        if not self.winner_urls:
+            if not messagebox.askyesno("Liens Dropbox manquants",
+                    "{lien_dropbox} sera vide. Continuer ?", parent=self):
+                return
+        if not messagebox.askyesno("Confirmation",
+                f"Envoyer {len(self.winners)} emails aux gagnants ?", parent=self):
+            return
+        self.lbl_send.config(text="⏳  Envoi en cours…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            ok, errs = 0, []
+            for w in self.winners:
+                if not w['email']:
+                    continue
+                v = self._variables(prenom=w['prenom'], nom=w['nom'], winner=w)
+                try:
+                    send_smtp(w['email'],
+                              apply_vars(tpl['subject'], v),
+                              apply_vars(tpl['html'],    v),
+                              apply_vars(tpl['plain'],   v))
+                    ok += 1
+                    ww = dict(w)
+                    self.after(0, lambda x=ww: self._log(
+                        f"✓  {x['prenom']} {x['nom']} → {x['email']}"))
+                except Exception as e:
+                    errs.append(w['email'])
+                    ww, ee = dict(w), str(e)
+                    self.after(0, lambda x=ww, err=ee: self._log(
+                        f"✗  {x['email']} : {err}"))
+            msg   = f"✓  {ok} email(s) envoyé(s)"
+            if errs:
+                msg += f"  —  {len(errs)} erreur(s)"
+            self.after(0, lambda: self.lbl_send.config(
+                text=msg, fg=C_GREEN if not errs else C_RED))
+            self.after(0, lambda: self._log(
+                f"Envoi : {ok} OK, {len(errs)} erreur(s)"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # Journal
+    def _build_log(self):
+        f = self._section("Journal", "📋")
+        self.log_widget = scrolledtext.ScrolledText(
+            f, height=8, wrap=tk.WORD,
+            bg="#1C1C1E", fg="#D4D4D4",
+            font=("Courier", 10), insertbackground=C_WHITE)
+        self.log_widget.pack(fill=tk.BOTH, expand=True)
+        self.log_widget.config(state=tk.DISABLED)
+
 
 if __name__ == "__main__":
     app = FlashFMApp()
