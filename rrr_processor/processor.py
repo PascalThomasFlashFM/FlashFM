@@ -143,6 +143,28 @@ def parse_monthly_file(path: str, log: LogFn) -> tuple[int, int, dict[str, ZoneD
         if zd.production:
             log(f"    Production : {zd.production:.2f} €", "")
 
+    # OPS (opérations spéciales) — mêmes colonnes que Régie, taux régie 30 %
+    # Les données OPS s'ajoutent aux zones Régie (même commercial, même zone, même mois)
+    if "OPS" in wb.sheetnames:
+        ws_ops = wb["OPS"]
+        ops_rows = 0
+        for row in ws_ops.iter_rows(values_only=True):
+            if not isinstance(row[1] if len(row) > 1 else None, (int, float)):
+                continue
+            zone_label = _safe_str(row, 5)   # col F
+            commercial = _safe_str(row, 4)   # col E
+            brut = _safe_float(row, 13)      # col N
+            net = _safe_float(row, 15)       # col P
+            section = _zone_key(zone_label)
+            if not section or not commercial:
+                continue
+            if section not in zones:
+                zones[section] = ZoneData(section)
+            zones[section].add_line(commercial, brut, net)
+            ops_rows += 1
+        if ops_rows:
+            log(f"  OPS : {ops_rows} ligne(s) ajoutée(s) aux zones Régie", "info")
+
     # FWD
     fwd_data = ZoneData("FWD")
     if "FWD" in wb.sheetnames:
@@ -298,15 +320,16 @@ def _resolve_name(ws, row: int) -> Optional[str]:
 
 def _insert_rows_fix_merges(ws, insert_at: int):
     """
-    Insère une ligne à insert_at et met à jour toutes les plages de cellules fusionnées.
-    openpyxl ne décale pas les merged_cells lors de insert_rows(), ce qui corromprait
-    les cellules situées sous une fusion non déplacée.
+    Insère une ligne à insert_at et met à jour :
+    - les plages de cellules fusionnées (merged_cells)
+    - les plages de tableaux Excel (ws.tables)
+    openpyxl ne décale ni l'un ni l'autre lors de insert_rows(), ce qui corromprait
+    le fichier xlsx à la sauvegarde.
     """
     ws.insert_rows(insert_at)
 
-    # Collecter et recalculer toutes les plages fusionnées
+    # --- Cellules fusionnées ---
     old_ranges = list(ws.merged_cells.ranges)
-    # Vider la liste (on va tout réajouter recalculé)
     for mr in old_ranges:
         ws.merged_cells.ranges.discard(mr)
 
@@ -323,6 +346,20 @@ def _insert_rows_fix_merges(ws, insert_at: int):
         ws.merge_cells(
             start_row=min_r, start_column=min_c,
             end_row=max_r, end_column=max_c,
+        )
+
+    # --- Tableaux Excel (évite l'erreur "Enregistrements réparés: Tableau dans /xl/tables/…") ---
+    from openpyxl.utils import range_boundaries, get_column_letter
+    for tbl in ws.tables.values():
+        min_c, min_r, max_c, max_r = range_boundaries(tbl.ref)
+        if min_r >= insert_at:
+            min_r += 1
+            max_r += 1
+        elif max_r >= insert_at:
+            max_r += 1
+        tbl.ref = (
+            f"{get_column_letter(min_c)}{min_r}"
+            f":{get_column_letter(max_c)}{max_r}"
         )
 
 
