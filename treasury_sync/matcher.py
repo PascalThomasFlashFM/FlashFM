@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .excel_treasury import TargetRow, normalize
 
 MIN_SUBSTRING_LENGTH = 5
