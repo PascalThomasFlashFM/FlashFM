@@ -1,7 +1,9 @@
 import unicodedata
+from copy import copy
 from dataclasses import dataclass
 
 import openpyxl
+from openpyxl.styles import Font
 
 MONTH_COLUMNS = {
     1: "C", 2: "D", 3: "E", 4: "F", 5: "G", 6: "H",
@@ -11,6 +13,8 @@ FIRST_DATA_ROW = 3
 LAST_DATA_ROW = 173
 RECETTE_LAST_ROW = 16  # rows 3-16 are receipts, rows after are expenses
 UNMATCHED_SHEET = "À vérifier"
+ESTIMATE_FONT_COLOR = "FFC5D9F1"  # light blue used for forecast/estimate values
+REAL_FONT_COLOR = "FF000000"
 
 
 def normalize(text: str) -> str:
@@ -69,16 +73,35 @@ def build_label_index(targets: list[TargetRow]) -> dict[str, list[TargetRow]]:
     return index
 
 
-def add_month_amounts(ws, month: int, amounts_by_row: dict[int, float]) -> None:
-    """Adds to whatever is already in the target cells, instead of
-    overwriting them — required so that incremental syncs (only the
-    transactions new since the last run) accumulate correctly month after
-    month instead of erasing prior manual or synced entries."""
+def is_estimate_cell(cell) -> bool:
+    color = cell.font.color.rgb if cell.font.color else None
+    return isinstance(color, str) and color.upper() == ESTIMATE_FONT_COLOR
+
+
+def _set_font_color(cell, rgb: str) -> None:
+    new_font = copy(cell.font)
+    new_font.color = openpyxl.styles.colors.Color(rgb=rgb)
+    cell.font = new_font
+
+
+def apply_month_amounts(ws, month: int, amounts_by_row: dict[int, float]) -> tuple[int, int]:
+    """Estimate cells (light blue font) are replaced by the real amount and
+    turned black. Cells that already hold a real value (black font) are
+    added to, so incremental syncs accumulate instead of erasing what a
+    previous run already wrote. Returns (nb_replaced, nb_added)."""
     col_letter = MONTH_COLUMNS[month]
+    replaced = added = 0
     for row, amount in amounts_by_row.items():
         cell = ws[f"{col_letter}{row}"]
-        current = cell.value if isinstance(cell.value, (int, float)) else 0
-        cell.value = round(current + amount, 2)
+        if is_estimate_cell(cell):
+            cell.value = round(amount, 2)
+            _set_font_color(cell, REAL_FONT_COLOR)
+            replaced += 1
+        else:
+            current = cell.value if isinstance(cell.value, (int, float)) else 0
+            cell.value = round(current + amount, 2)
+            added += 1
+    return replaced, added
 
 
 def write_unmatched(wb, entries: list[dict]) -> None:

@@ -14,7 +14,7 @@ from treasury_sync.excel_treasury import (
     get_treasury_sheet,
     parse_target_rows,
     build_label_index,
-    add_month_amounts,
+    apply_month_amounts,
     write_unmatched,
 )
 from treasury_sync.matcher import resolve
@@ -156,9 +156,12 @@ def main():
     for (year, month, row), amount in amounts_by_key.items():
         by_sheet_month.setdefault((year, month), {})[row] = amount
 
+    replaced_count = added_count = 0
     for (year, month), amounts in by_sheet_month.items():
         ws, _ = sheet_cache[year]
-        add_month_amounts(ws, month, amounts)
+        replaced, added = apply_month_amounts(ws, month, amounts)
+        replaced_count += replaced
+        added_count += added
 
     for entries in unmatched_by_year.values():
         write_unmatched(wb, entries)
@@ -171,6 +174,8 @@ def main():
     total_unmatched = sum(len(v) for v in unmatched_by_year.values())
     print(f"\n{processed_count} nouvelle(s) transaction(s) trouvée(s).")
     print(f"{matched_count} affectée(s) automatiquement au tableau.")
+    print(f"  dont {replaced_count} estimation(s) remplacée(s) par une vraie valeur")
+    print(f"  et {added_count} cellule(s) déjà réelle(s) mise(s) à jour (montant ajouté)")
     print(f"{total_unmatched} à vérifier manuellement (onglet 'À vérifier').")
     print(f"Fichier mis à jour : {excel_path}")
 
