@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from treasury_sync.pennylane_client import PennylaneClient
 from treasury_sync.excel_treasury import (
     load_workbook,
-    get_treasury_sheet,
+    ensure_year_sheet,
     parse_target_rows,
     build_label_index,
     apply_month_amounts,
@@ -116,7 +116,7 @@ def main():
         tx_date = date.fromisoformat(tx["date"])
         year = tx_date.year
         if year not in sheet_cache:
-            ws = get_treasury_sheet(wb, year)
+            ws = ensure_year_sheet(wb, year)
             targets = parse_target_rows(ws)
             sheet_cache[year] = (ws, build_label_index(targets))
         ws, label_index = sheet_cache[year]

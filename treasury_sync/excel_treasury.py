@@ -43,6 +43,39 @@ def get_treasury_sheet(wb, year: int):
     return wb[sheet_name]
 
 
+MIN_ROLLOVER_YEAR = 2020  # safety floor: never auto-create sheets below this
+
+
+def ensure_year_sheet(wb, year: int):
+    """Returns the "Trésorerie {year}" sheet, creating it (and any missing
+    year in between) by cloning the previous year's sheet if needed. Every
+    detail cell in the new sheet is seeded with the previous year's value as
+    a blue estimate — real Pennylane data will progressively replace it
+    through the year, exactly like any other forecast cell."""
+    sheet_name = f"Trésorerie {year}"
+    if sheet_name in wb.sheetnames:
+        return wb[sheet_name]
+    if year - 1 < MIN_ROLLOVER_YEAR:
+        raise ValueError(
+            f"Onglet '{sheet_name}' introuvable et aucun onglet antérieur "
+            f"disponible pour servir de modèle."
+        )
+
+    prev_ws = ensure_year_sheet(wb, year - 1)
+    new_ws = wb.copy_worksheet(prev_ws)
+    new_ws.title = sheet_name
+
+    targets = parse_target_rows(prev_ws)
+    for month_col in MONTH_COLUMNS.values():
+        for target in targets:
+            prev_value = prev_ws[f"{month_col}{target.row}"].value
+            new_cell = new_ws[f"{month_col}{target.row}"]
+            if isinstance(prev_value, (int, float)):
+                new_cell.value = prev_value
+            _set_font_color(new_cell, ESTIMATE_FONT_COLOR)
+    return new_ws
+
+
 def parse_target_rows(ws) -> list[TargetRow]:
     """Scans column A (bloc, forward-filled) and column B (fournisseur/label)
     to build the list of rows that can receive an amount. Rows where column B
