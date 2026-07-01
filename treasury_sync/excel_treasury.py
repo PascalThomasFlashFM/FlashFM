@@ -69,10 +69,16 @@ def build_label_index(targets: list[TargetRow]) -> dict[str, list[TargetRow]]:
     return index
 
 
-def write_month_amounts(ws, month: int, amounts_by_row: dict[int, float]) -> None:
+def add_month_amounts(ws, month: int, amounts_by_row: dict[int, float]) -> None:
+    """Adds to whatever is already in the target cells, instead of
+    overwriting them — required so that incremental syncs (only the
+    transactions new since the last run) accumulate correctly month after
+    month instead of erasing prior manual or synced entries."""
     col_letter = MONTH_COLUMNS[month]
     for row, amount in amounts_by_row.items():
-        ws[f"{col_letter}{row}"] = round(amount, 2)
+        cell = ws[f"{col_letter}{row}"]
+        current = cell.value if isinstance(cell.value, (int, float)) else 0
+        cell.value = round(current + amount, 2)
 
 
 def write_unmatched(wb, entries: list[dict]) -> None:

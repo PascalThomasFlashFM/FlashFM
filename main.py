@@ -1,12 +1,12 @@
 import argparse
 import json
+import os
+import shutil
 import sys
-from calendar import monthrange
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
-import os
 
 from treasury_sync.pennylane_client import PennylaneClient
 from treasury_sync.excel_treasury import (
@@ -14,22 +14,27 @@ from treasury_sync.excel_treasury import (
     get_treasury_sheet,
     parse_target_rows,
     build_label_index,
-    write_month_amounts,
+    add_month_amounts,
     write_unmatched,
 )
 from treasury_sync.matcher import resolve
+from treasury_sync.state import load_state, save_state
 
 DEFAULT_MAPPING_PATH = Path(__file__).resolve().parent / "mapping.json"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Met à jour l'onglet Trésorerie depuis Pennylane.")
-    parser.add_argument("--month", required=True, help="Mois à synchroniser, format YYYY-MM")
-    parser.add_argument("--excel", default=os.environ.get("EXCEL_PATH"), help="Chemin du fichier Excel")
-    parser.add_argument("--token", default=os.environ.get("PENNYLANE_API_TOKEN"), help="Token API Pennylane")
-    parser.add_argument("--mapping", default=str(DEFAULT_MAPPING_PATH), help="Chemin du fichier mapping.json")
-    parser.add_argument("--output", default=None, help="Fichier de sortie (par défaut: copie _updated à côté de l'original)")
-    parser.add_argument("--in-place", action="store_true", help="Écrase directement le fichier Excel d'origine")
+    parser = argparse.ArgumentParser(
+        description="Met à jour l'onglet Trésorerie depuis Pennylane, en reprenant "
+        "automatiquement où la dernière synchronisation s'est arrêtée."
+    )
+    parser.add_argument(
+        "--since",
+        default=None,
+        help="Optionnel : force un rattrapage à partir de cette date (YYYY-MM-DD), "
+        "ignore la reprise automatique. À utiliser une seule fois pour rattraper "
+        "des mois anciens.",
+    )
     return parser.parse_args()
 
 
@@ -41,35 +46,80 @@ def resolve_tiers_name(client: PennylaneClient, tx: dict) -> str | None:
     return None
 
 
+def backup_file(path: Path) -> Path:
+    backup_dir = path.parent / "sauvegardes_tresorerie"
+    backup_dir.mkdir(exist_ok=True)
+    stamp = date.today().isoformat()
+    backup_path = backup_dir / f"{path.stem}_{stamp}{path.suffix}"
+    counter = 1
+    while backup_path.exists():
+        backup_path = backup_dir / f"{path.stem}_{stamp}_{counter}{path.suffix}"
+        counter += 1
+    shutil.copy2(path, backup_path)
+    return backup_path
+
+
 def main():
     load_dotenv()
     args = parse_args()
 
-    if not args.excel:
-        sys.exit("Chemin du fichier Excel manquant (--excel ou EXCEL_PATH dans .env)")
-    if not args.token:
-        sys.exit("Token API Pennylane manquant (--token ou PENNYLANE_API_TOKEN dans .env)")
+    excel_path_str = os.environ.get("EXCEL_PATH")
+    token = os.environ.get("PENNYLANE_API_TOKEN")
+    if not excel_path_str:
+        sys.exit("EXCEL_PATH manquant dans le fichier .env")
+    if not token:
+        sys.exit("PENNYLANE_API_TOKEN manquant dans le fichier .env")
+    excel_path = Path(excel_path_str)
+    if not excel_path.exists():
+        sys.exit(f"Fichier Excel introuvable : {excel_path}")
 
-    year, month = (int(x) for x in args.month.split("-"))
-    since = date(year, month, 1)
-    until = date(year, month, monthrange(year, month)[1])
+    mapping = json.loads(DEFAULT_MAPPING_PATH.read_text())
+    state = load_state()
+    last_synced_id = state.get("last_synced_transaction_id")
 
-    mapping = json.loads(Path(args.mapping).read_text())
+    client = PennylaneClient(token)
 
-    client = PennylaneClient(args.token)
-    wb = load_workbook(args.excel)
-    ws = get_treasury_sheet(wb, year)
-    targets = parse_target_rows(ws)
-    label_index = build_label_index(targets)
+    if args.since:
+        since_date = date.fromisoformat(args.since)
+        print(f"Rattrapage manuel depuis le {since_date.isoformat()}.")
+        tx_iterator = client.iter_transactions_since(since_date)
+    elif last_synced_id is None:
+        since_date = date.today().replace(day=1)
+        print(
+            f"Première synchronisation : aucun historique connu, je pars du "
+            f"{since_date.isoformat()} (début du mois en cours)."
+        )
+        print(
+            "Pour rattraper des mois plus anciens, relance avec --since AAAA-MM-JJ."
+        )
+        tx_iterator = client.iter_transactions_since(since_date)
+    else:
+        tx_iterator = client.iter_new_transactions(last_synced_id)
 
-    amounts_by_row: dict[int, float] = {}
-    unmatched_entries = []
+    backup_path = backup_file(excel_path)
+    print(f"Sauvegarde créée : {backup_path}")
+
+    wb = load_workbook(str(excel_path))
+
+    sheet_cache: dict[int, tuple] = {}
+    amounts_by_key: dict[tuple[int, int, int], float] = {}  # (year, month, row) -> amount
+    unmatched_by_year: dict[int, list[dict]] = {}
+    max_id_seen = last_synced_id
     matched_count = 0
+    processed_count = 0
 
-    for tx in client.iter_transactions_since(since):
+    for tx in tx_iterator:
+        processed_count += 1
+        if max_id_seen is None or tx["id"] > max_id_seen:
+            max_id_seen = tx["id"]
+
         tx_date = date.fromisoformat(tx["date"])
-        if tx_date > until:
-            continue
+        year = tx_date.year
+        if year not in sheet_cache:
+            ws = get_treasury_sheet(wb, year)
+            targets = parse_target_rows(ws)
+            sheet_cache[year] = (ws, build_label_index(targets))
+        ws, label_index = sheet_cache[year]
 
         tiers_name = resolve_tiers_name(client, tx)
         category_labels = [c["label"] for c in tx.get("categories", [])]
@@ -80,7 +130,7 @@ def main():
         )
 
         if target is None:
-            unmatched_entries.append(
+            unmatched_by_year.setdefault(year, []).append(
                 {
                     "date": tx["date"],
                     "label": tx["label"],
@@ -98,23 +148,31 @@ def main():
             continue
 
         signed_amount = amount if target.is_recette else abs(amount)
-        amounts_by_row[target.row] = amounts_by_row.get(target.row, 0.0) + signed_amount
+        key = (year, tx_date.month, target.row)
+        amounts_by_key[key] = amounts_by_key.get(key, 0.0) + signed_amount
         matched_count += 1
 
-    write_month_amounts(ws, month, amounts_by_row)
-    write_unmatched(wb, unmatched_entries)
+    by_sheet_month: dict[tuple[int, int], dict[int, float]] = {}
+    for (year, month, row), amount in amounts_by_key.items():
+        by_sheet_month.setdefault((year, month), {})[row] = amount
 
-    if args.in_place:
-        output_path = args.excel
-    else:
-        excel_path = Path(args.excel)
-        output_path = args.output or str(excel_path.with_name(f"{excel_path.stem}_updated{excel_path.suffix}"))
+    for (year, month), amounts in by_sheet_month.items():
+        ws, _ = sheet_cache[year]
+        add_month_amounts(ws, month, amounts)
 
-    wb.save(output_path)
+    for entries in unmatched_by_year.values():
+        write_unmatched(wb, entries)
 
-    print(f"{matched_count} transaction(s) affectée(s) sur {len(amounts_by_row)} ligne(s).")
-    print(f"{len(unmatched_entries)} transaction(s) non affectée(s), listées dans l'onglet 'À vérifier'.")
-    print(f"Fichier enregistré : {output_path}")
+    wb.save(str(excel_path))
+
+    if max_id_seen is not None:
+        save_state({"last_synced_transaction_id": max_id_seen})
+
+    total_unmatched = sum(len(v) for v in unmatched_by_year.values())
+    print(f"\n{processed_count} nouvelle(s) transaction(s) trouvée(s).")
+    print(f"{matched_count} affectée(s) automatiquement au tableau.")
+    print(f"{total_unmatched} à vérifier manuellement (onglet 'À vérifier').")
+    print(f"Fichier mis à jour : {excel_path}")
 
 
 if __name__ == "__main__":

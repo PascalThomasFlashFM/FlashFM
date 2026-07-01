@@ -55,6 +55,23 @@ class PennylaneClient:
                 return
             cursor = data["next_cursor"]
 
+    def iter_new_transactions(self, last_synced_id: int | None):
+        """Yields transactions more recent than `last_synced_id` (most recent
+        first). Pass None to fetch everything currently available."""
+        cursor = None
+        while True:
+            params = {"sort": "-id"}
+            if cursor:
+                params["cursor"] = cursor
+            data = self._get("/transactions", params=params)
+            for item in data["items"]:
+                if last_synced_id is not None and item["id"] <= last_synced_id:
+                    return
+                yield item
+            if not data.get("has_more"):
+                return
+            cursor = data["next_cursor"]
+
     def get_supplier_name(self, supplier_id: int) -> str:
         key = str(supplier_id)
         if key not in self._supplier_cache:

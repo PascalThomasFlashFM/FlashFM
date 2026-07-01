@@ -2,6 +2,6 @@
 __pycache__/
 *.pyc
 .venv/
-data/cache/
+data/
 *.xlsx
 !*_sample.xlsx
