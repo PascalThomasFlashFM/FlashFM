@@ -1,0 +1,12 @@
+{
+  "tiers_to_label": {
+    "TEAM VIEWER": "TeamViewer"
+  },
+  "keyword_to_label": {
+    "EASYPARK": "Easypark",
+    "TF1 PUBLICITE": "TF1 Pub",
+    "SOKIMAX": "Sokimax U",
+    "INDEPENDANTS": "Indesradios"
+  },
+  "ambiguous_overrides": []
+}
