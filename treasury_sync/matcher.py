@@ -23,8 +23,7 @@ def _filter_by_section(candidates: list[TargetRow], amount: float) -> list[Targe
     accidental cross-section matches (e.g. a revenue transaction whose label
     happens to contain the name of an unrelated expense row)."""
     is_recette = amount > 0
-    filtered = [c for c in candidates if c.is_recette == is_recette]
-    return filtered if filtered else candidates
+    return [c for c in candidates if c.is_recette == is_recette]
 
 
 def should_ignore(label: str, category_labels: list[str], mapping: dict) -> bool:
