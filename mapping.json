@@ -44,18 +44,19 @@
     "WIN GROUP SOFT": "WinMediia",
     "SUPER U": "Super U",
     "ANTHROPIC": "Anthropic",
-    "AVIA": "Avia"
+    "AVIA": "Avia",
+    "ALPRO": "Retraite ALPRO"
   },
   "category_to_label": {
     "Prestations partenariat": "Stripe/Chèque"
   },
   "row_overrides": [
-    {"keyword": "877332", "target_row": 41},
-    {"keyword": "888693", "target_row": 42},
-    {"keyword": "857755", "target_row": 43},
-    {"keyword": "GCASJ", "min": 170, "max": 200, "target_row": 89},
-    {"keyword": "GCASJ", "min": 65, "max": 85, "target_row": 87},
-    {"keyword": "GCASJ", "min": 230, "max": 250, "target_row": 88}
+    {"keyword": "877332", "target_label": "URSSAF", "target_occurrence": 1},
+    {"keyword": "888693", "target_label": "URSSAF", "target_occurrence": 2},
+    {"keyword": "857755", "target_label": "URSSAF", "target_occurrence": 3},
+    {"keyword": "GCASJ", "min": 170, "max": 200, "target_label": "Groupama", "target_occurrence": 4},
+    {"keyword": "GCASJ", "min": 65, "max": 85, "target_label": "Groupama", "target_occurrence": 2},
+    {"keyword": "GCASJ", "min": 230, "max": 250, "target_label": "Groupama", "target_occurrence": 3}
   ],
   "ignore_categories": [
     "Virements internes"

@@ -12,7 +12,9 @@ MONTH_COLUMNS = {
     7: "I", 8: "J", 9: "K", 10: "L", 11: "M", 12: "N",
 }
 FIRST_DATA_ROW = 3
-LAST_DATA_ROW = 173
+LAST_DATA_ROW = 190  # generous margin past the last detail row; blank/total
+                     # rows in between are auto-skipped, so this only needs
+                     # to stay ahead of manual row insertions, not exact
 RECETTE_LAST_ROW = 16  # rows 3-16 are receipts, rows after are expenses
 UNMATCHED_SHEET = "À vérifier"
 ESTIMATE_FONT_COLOR = "FFC5D9F1"  # light blue used for forecast/estimate values

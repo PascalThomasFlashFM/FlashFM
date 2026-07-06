@@ -60,7 +60,10 @@ def resolve(
     # High-confidence, explicit row assignments (e.g. distinguishing several
     # rows that share the exact same label, like three "URSSAF" lines told
     # apart by the payment reference in the bank label) take priority over
-    # the generic cascade below.
+    # the generic cascade below. Targeted by label text + occurrence (1st,
+    # 2nd, 3rd... row with that exact label, top to bottom) rather than by
+    # row number, so the rule keeps working even after rows are inserted or
+    # removed elsewhere in the sheet.
     for rule in mapping.get("row_overrides", []):
         if rule["keyword"].upper() not in label.upper():
             continue
@@ -68,9 +71,10 @@ def resolve(
             continue
         if "max" in rule and abs(amount) > rule["max"]:
             continue
-        match = next((t for t in all_targets if t.row == rule["target_row"]), None)
-        if match:
-            return match, "ok_override", [match]
+        same_label = label_index.get(normalize(rule["target_label"]), [])
+        occurrence = rule.get("target_occurrence", 1)
+        if 1 <= occurrence <= len(same_label):
+            return same_label[occurrence - 1], "ok_override", [same_label[occurrence - 1]]
 
     candidates: list[TargetRow] = []
 
