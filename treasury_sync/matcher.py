@@ -92,6 +92,14 @@ def resolve(
                 if candidates:
                     break
 
+    if not candidates:
+        normalized_categories = [normalize(c) for c in category_labels]
+        for category, alias in mapping.get("category_to_label", {}).items():
+            if normalize(category) in normalized_categories:
+                candidates = label_index.get(normalize(alias), [])
+                if candidates:
+                    break
+
     candidates = _filter_by_section(candidates, amount)
 
     if len(candidates) == 1:

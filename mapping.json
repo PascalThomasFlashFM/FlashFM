@@ -40,7 +40,14 @@
     "IMPOT-PAS-DSN": "DGFIP passdsn",
     "AUDIENS ENCAIS": "AUDIENS",
     "REM CHQ": "Chèque/Espèce",
-    "GROUPAMA": "Groupama"
+    "GROUPAMA": "Groupama",
+    "WIN GROUP SOFT": "WinMediia",
+    "SUPER U": "Super U",
+    "ANTHROPIC": "Anthropic",
+    "AVIA": "Avia"
+  },
+  "category_to_label": {
+    "Prestations partenariat": "Stripe/Chèque"
   },
   "row_overrides": [
     {"keyword": "877332", "target_row": 41},
