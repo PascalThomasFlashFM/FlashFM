@@ -1,0 +1,22 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+echo "=== Rattrapage initial de la trésorerie ==="
+echo ""
+echo "Chaque cellule est traitée selon sa couleur :"
+echo "  - bleu clair (estimation) -> remplacée automatiquement par le vrai montant, sans risque"
+echo "  - noir (déjà un vrai montant) -> le nouveau montant est AJOUTÉ"
+echo ""
+echo "ATTENTION : si tu as déjà saisi toi-même à la main, en noir, des vrais"
+echo "montants pour certains mois AVANT d'utiliser cet outil, ne fais pas"
+echo "remonter le rattrapage jusque-là, sinon ces transactions seraient"
+echo "comptées deux fois (ta saisie manuelle + l'ajout automatique)."
+echo ""
+echo "Depuis quelle date veux-tu récupérer les transactions Pennylane ?"
+echo "(Format AAAA-MM-JJ, par exemple 2026-03-01 pour repartir du 1er mars)"
+echo ""
+read -p "Date de début : " START_DATE
+echo ""
+python3 main.py --since "$START_DATE"
+echo ""
+echo "Terminé. Appuie sur Entrée pour fermer cette fenêtre."
+read
