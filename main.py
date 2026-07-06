@@ -19,7 +19,7 @@ from treasury_sync.excel_treasury import (
     apply_month_amounts,
     write_unmatched,
 )
-from treasury_sync.matcher import resolve
+from treasury_sync.matcher import resolve, should_ignore
 from treasury_sync.state import load_state, save_state
 
 DEFAULT_MAPPING_PATH = Path(__file__).resolve().parent / "mapping.json"
@@ -108,12 +108,18 @@ def main():
     unmatched_by_year: dict[int, list[dict]] = {}
     max_id_seen = last_synced_id
     matched_count = 0
+    ignored_count = 0
     processed_count = 0
 
     for tx in tx_iterator:
         processed_count += 1
         if max_id_seen is None or tx["id"] > max_id_seen:
             max_id_seen = tx["id"]
+
+        category_labels = [c["label"] for c in tx.get("categories", [])]
+        if should_ignore(tx["label"], category_labels, mapping):
+            ignored_count += 1
+            continue
 
         tx_date = date.fromisoformat(tx["date"])
         year = tx_date.year
@@ -124,7 +130,6 @@ def main():
         ws, label_index = sheet_cache[year]
 
         tiers_name = resolve_tiers_name(client, tx)
-        category_labels = [c["label"] for c in tx.get("categories", [])]
         amount = float(tx["amount"])
 
         target, reason, candidates = resolve(
@@ -175,6 +180,7 @@ def main():
 
     total_unmatched = sum(len(v) for v in unmatched_by_year.values())
     print(f"\n{processed_count} nouvelle(s) transaction(s) trouvée(s).")
+    print(f"{ignored_count} ignorée(s) (mouvements internes / doublons Stripe).")
     print(f"{matched_count} affectée(s) automatiquement au tableau.")
     print(f"  dont {replaced_count} estimation(s) remplacée(s) par une vraie valeur")
     print(f"  et {added_count} cellule(s) déjà réelle(s) mise(s) à jour (montant ajouté)")

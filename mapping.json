@@ -1,12 +1,60 @@
 {
   "tiers_to_label": {
-    "TEAM VIEWER": "TeamViewer"
+    "TEAM VIEWER": "TeamViewer",
+    "KIFF LA PROD": "KLP",
+    "ONET PROP ET FACILITY SERVICES": "Onet Propreté",
+    "C B A": "CBA",
+    "Okimia": "Fygr",
+    "Mobilize Lease@co": "Diac Location",
+    "SARL M2N INTERNATIONAL": "M2N",
+    "CPME 87": "CPME87",
+    "OpenAI": "Open AI Chatgpt",
+    "WINMEDIA": "WinMediia",
+    "Super U Feytiat": "Super U",
+    "NATIXIS INTEREPARGNE": "Natxis"
   },
   "keyword_to_label": {
     "EASYPARK": "Easypark",
     "TF1 PUBLICITE": "TF1 Pub",
     "SOKIMAX": "Sokimax U",
-    "INDEPENDANTS": "Indesradios"
+    "INDEPENDANTS": "Indesradios",
+    "EVI STRIPE STRIPE": "Stripe",
+    "AUSSURE": "Aussure",
+    "LEPETIT": "Lepetit",
+    "GRANGER": "Granger",
+    "FONDEVILLE": "Fondeville",
+    "FARGEOT": "Fargeot",
+    "MARTY": "Marty",
+    "VERGNAUD": "Vergnaud",
+    "KUCHARSKY": "Kucharsky",
+    "KICHOU": "Kichou",
+    "JOHN LACKO": "John Lacko",
+    "LAURENT PIERRON": "Laurent Pierron",
+    "LEADER ELECTRONIC": "Leader Electronic",
+    "SCI 2002 IMMO": "Limoges",
+    "ENGIE": "Engie",
+    "EDF PROXIMEDIA": "EDF",
+    "GOOD NEWS PRES": "Good News Presse",
+    "LIMOGES HAND": "Limoges Handball",
+    "DGFIP TVA": "TVA",
+    "IMPOT-PAS-DSN": "DGFIP passdsn",
+    "AUDIENS ENCAIS": "AUDIENS",
+    "REM CHQ": "Chèque/Espèce",
+    "GROUPAMA": "Groupama"
   },
-  "ambiguous_overrides": []
+  "row_overrides": [
+    {"keyword": "877332", "target_row": 41},
+    {"keyword": "888693", "target_row": 42},
+    {"keyword": "857755", "target_row": 43},
+    {"keyword": "GCASJ", "min": 170, "max": 200, "target_row": 89},
+    {"keyword": "GCASJ", "min": 65, "max": 85, "target_row": 87},
+    {"keyword": "GCASJ", "min": 230, "max": 250, "target_row": 88}
+  ],
+  "ignore_categories": [
+    "Virements internes"
+  ],
+  "ignore_keywords": [
+    "CHARGE: FORMULE",
+    "PAYOUT: STRIPE PAYOUT"
+  ]
 }
