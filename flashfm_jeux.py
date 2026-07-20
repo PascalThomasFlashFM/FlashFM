@@ -597,13 +597,22 @@ class ColorButton(tk.Frame):
             self._cmd()
 
     def _tint(self, factor):
-        r, g, b = (int(self._bg[i:i+2], 16) for i in (1, 3, 5))
+        bg = self._bg
+        if not bg or len(bg) != 7 or bg[0] != '#':
+            return
+        try:
+            r, g, b = (int(bg[i:i+2], 16) for i in (1, 3, 5))
+        except ValueError:
+            return
         c = "#{:02x}{:02x}{:02x}".format(
             min(255, int(r * factor)),
             min(255, int(g * factor)),
             min(255, int(b * factor)))
-        self._lbl.config(bg=c)
-        tk.Frame.config(self, bg=c)
+        try:
+            self._lbl.config(bg=c)
+            tk.Frame.config(self, bg=c)
+        except tk.TclError:
+            pass
 
     def config(self, **kw):
         state = kw.pop("state", None)
