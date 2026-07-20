@@ -95,50 +95,115 @@ def parse_date(s):
 # ══════════════════════════════════════════════════════════
 
 def parse_csv(filepath):
-    """Parse un export CSV MGS ; retourne la liste de participants uniques."""
-    with open(filepath, encoding="utf-8") as f:
+    """Parse un export CSV (format structuré ou ancien format MGS).
+    Détecte automatiquement le format via les en-têtes et retourne la liste
+    de participants uniques."""
+    with open(filepath, encoding="utf-8-sig") as f:
         raw = f.read()
     reader = csv.reader(io.StringIO(raw), delimiter=';', quotechar='"')
     rows   = list(reader)
+    if not rows:
+        return []
+
+    def _strip_excel(val):
+        """Supprime le format Excel =\"valeur\" → valeur."""
+        v = val.strip()
+        if v.startswith('='):
+            v = v[1:]
+        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        return v.strip()
+
+    def _clean_phone(raw_phone):
+        p = re.sub(r'[\s./\-]', '', _strip_excel(raw_phone))
+        p = re.sub(r'^(\+33|0033)', '0', p)
+        return p
+
+    # Analyse du header pour détecter le format
+    header_raw = rows[0]
+    header = [re.sub(r'<[^>]+>', '', h).strip().lower() for h in header_raw]
+
+    def _find_col(*keywords):
+        for i, h in enumerate(header):
+            if any(kw in h for kw in keywords):
+                return i
+        return None
+
+    col_nom    = _find_col('nom')
+    col_prenom = _find_col('prénom', 'prenom')
+    col_email  = _find_col('email', 'e-mail', 'courriel')
+    col_phone  = _find_col('téléphone', 'telephone', 'tél', 'tel', 'phone')
+    col_ville  = _find_col('ville')
+    col_coord  = _find_col('coordonnées', 'coordonnees')
+
+    # Format structuré : colonnes séparées pour nom, email, téléphone
+    use_structured = (col_email is not None and col_nom is not None)
 
     participants, seen = [], {}
+    _unique_counter = [0]
+
     for row in rows[1:]:
-        if len(row) < 8:
-            continue
-        coordonnees = row[7].strip()
-        phone_col   = row[6].strip() if len(row) > 6 else ""
-        if not coordonnees:
+        if not row or all(c.strip() == '' for c in row):
             continue
 
-        email_match = EMAIL_RE.search(coordonnees)
-        email = email_match.group(0) if email_match else ""
+        if use_structured:
+            def _get(col):
+                if col is None or len(row) <= col:
+                    return ""
+                return _strip_excel(row[col])
 
-        phone_match = PHONE_RE.search(coordonnees)
-        if phone_match:
-            phone = re.sub(r'[\s./]', '', phone_match.group(0))
-            phone = re.sub(r'^(\+33|0033)', '0', phone)
-        elif phone_col:
-            phone = re.sub(r'[\s./]', '', phone_col)
-            phone = re.sub(r'^(\+33|0033)', '0', phone)
+            nom    = _get(col_nom).upper()
+            prenom = _get(col_prenom).capitalize() if col_prenom is not None else ""
+            email  = _get(col_email).lower()
+            ville  = _get(col_ville).title() if col_ville is not None else ""
+            phone  = _clean_phone(_get(col_phone)) if col_phone is not None else ""
+
+            if not nom:
+                continue
+
         else:
-            phone = ""
+            # Ancien format MGS : données dans la colonne "coordonnées" (col 7)
+            ci = col_coord if col_coord is not None else 7
+            if len(row) <= ci:
+                continue
+            coordonnees = row[ci].strip()
+            phone_col   = row[6].strip() if len(row) > 6 else ""
+            if not coordonnees:
+                continue
 
-        text = coordonnees
-        if email_match:
-            text = text.replace(email_match.group(0), '')
-        if phone_match:
-            text = text.replace(phone_match.group(0), '')
-        text = re.sub(r'\b\d{5}\b', '', text)
-        text = re.sub(r'\bet\b', '', text)
-        text = re.sub(r'[,;]+', ' ', text)
-        text = re.sub(r'\s+', ' ', text).strip(' .-')
+            email_match = EMAIL_RE.search(coordonnees)
+            email = email_match.group(0).lower() if email_match else ""
 
-        parts  = text.split()
-        nom    = parts[0].upper()      if len(parts) >= 1 else "?"
-        prenom = parts[1].capitalize() if len(parts) >= 2 else ""
-        ville  = ' '.join(w.capitalize() for w in parts[2:] if len(w) > 1)
+            phone_match = PHONE_RE.search(coordonnees)
+            if phone_match:
+                phone = _clean_phone(phone_match.group(0))
+            elif phone_col:
+                phone = _clean_phone(phone_col)
+            else:
+                phone = ""
 
-        key = (phone, email.lower())
+            text = coordonnees
+            if email_match:
+                text = text.replace(email_match.group(0), '')
+            if phone_match:
+                text = text.replace(phone_match.group(0), '')
+            text = re.sub(r'\b\d{5}\b', '', text)
+            text = re.sub(r'\bet\b', '', text)
+            text = re.sub(r'[,;]+', ' ', text)
+            text = re.sub(r'\s+', ' ', text).strip(' .-')
+
+            parts  = text.split()
+            nom    = parts[0].upper()      if len(parts) >= 1 else "?"
+            prenom = parts[1].capitalize() if len(parts) >= 2 else ""
+            ville  = ' '.join(w.capitalize() for w in parts[2:] if len(w) > 1)
+
+        # Clé de déduplication : même email ET même téléphone → doublon
+        if email or phone:
+            key = (phone, email)
+        else:
+            _unique_counter[0] += 1
+            key = ('__unique__', _unique_counter[0])
+
         if key not in seen:
             seen[key] = True
             participants.append({
