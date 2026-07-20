@@ -134,6 +134,7 @@ def parse_csv(filepath):
     col_email  = _find_col('email', 'e-mail', 'courriel')
     col_phone  = _find_col('téléphone', 'telephone', 'tél', 'tel', 'phone')
     col_ville  = _find_col('ville')
+    col_cp     = _find_col('code postal', 'codepostal', 'cp', 'code_postal')
     col_coord  = _find_col('coordonnées', 'coordonnees')
 
     # Format structuré : colonnes séparées pour nom, email, téléphone
@@ -157,6 +158,7 @@ def parse_csv(filepath):
             email  = _get(col_email).lower()
             ville  = _get(col_ville).title() if col_ville is not None else ""
             phone  = _clean_phone(_get(col_phone)) if col_phone is not None else ""
+            cp     = re.sub(r'\D', '', _get(col_cp))[:5] if col_cp is not None else ""
 
             if not nom:
                 continue
@@ -187,6 +189,8 @@ def parse_csv(filepath):
                 text = text.replace(email_match.group(0), '')
             if phone_match:
                 text = text.replace(phone_match.group(0), '')
+            cp_match = re.search(r'\b(\d{5})\b', text)
+            cp = cp_match.group(1) if cp_match else ""
             text = re.sub(r'\b\d{5}\b', '', text)
             text = re.sub(r'\bet\b', '', text)
             text = re.sub(r'[,;]+', ' ', text)
@@ -210,8 +214,33 @@ def parse_csv(filepath):
                 'nom': nom, 'prenom': prenom,
                 'ville': ville,
                 'email': email, 'phone': phone,
+                'cp': cp,
             })
     return participants
+
+
+# ══════════════════════════════════════════════════════════
+#  Filtre départements
+# ══════════════════════════════════════════════════════════
+
+DEPT_FILTER_DEFAULT = ["87", "19", "23", "86"]
+
+def dept_of(cp):
+    """Retourne le numéro de département (str) depuis un code postal à 5 chiffres."""
+    cp = re.sub(r'\D', '', cp)
+    if len(cp) >= 2:
+        return cp[:2]
+    return ""
+
+def apply_dept_filter(participants, selected_depts):
+    """Filtre les participants selon les départements sélectionnés.
+    Si selected_depts est vide ou si aucun participant n'a de CP → retourne tous."""
+    if not selected_depts:
+        return participants
+    has_cp = any(p.get('cp') for p in participants)
+    if not has_cp:
+        return participants
+    return [p for p in participants if dept_of(p.get('cp', '')) in selected_depts]
 
 
 # ══════════════════════════════════════════════════════════
@@ -846,6 +875,52 @@ class FlashFMApp(tk.Tk):
                                      fg=C_GREEN, font=("", 10))
         self.lbl_csv_info.pack(anchor="w", pady=(4, 0))
 
+        # Filtre départements (masqué jusqu'au chargement d'un CSV avec CP)
+        self._dept_frame = tk.Frame(f, bg=C_WHITE)
+        tk.Label(self._dept_frame, text="Filtrer par département :",
+                 bg=C_WHITE, font=("", 10, "bold")).pack(anchor="w", pady=(8, 2))
+        cb_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        cb_row.pack(anchor="w")
+        self._dept_vars = {}
+        for dept in DEPT_FILTER_DEFAULT:
+            var = tk.BooleanVar(value=False)
+            self._dept_vars[dept] = var
+            tk.Checkbutton(cb_row, text=f"Dép. {dept}", variable=var,
+                           bg=C_WHITE, font=("", 10),
+                           command=self._update_dept_info).pack(side=tk.LEFT, padx=4)
+        # Bouton "Tout cocher / Tout décocher"
+        btn_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        btn_row.pack(anchor="w", pady=(4, 0))
+        self._btn(btn_row, "Tout cocher",   self._dept_check_all,   color=C_GRAY, font_size=9).pack(side=tk.LEFT, padx=(0, 6))
+        self._btn(btn_row, "Tout décocher", self._dept_uncheck_all, color=C_GRAY, font_size=9).pack(side=tk.LEFT)
+        self.lbl_dept_info = tk.Label(self._dept_frame, text="", bg=C_WHITE,
+                                      fg=C_BLUE, font=("", 10))
+        self.lbl_dept_info.pack(anchor="w", pady=(4, 0))
+
+    def _dept_check_all(self):
+        for v in self._dept_vars.values():
+            v.set(True)
+        self._update_dept_info()
+
+    def _dept_uncheck_all(self):
+        for v in self._dept_vars.values():
+            v.set(False)
+        self._update_dept_info()
+
+    def _update_dept_info(self):
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        if not selected:
+            self.lbl_dept_info.config(text="Aucun filtre — tous les participants inclus")
+            return
+        pool = apply_dept_filter(self.participants, selected)
+        self.lbl_dept_info.config(
+            text=f"Dép. {', '.join(sorted(selected))} → {len(pool)} participant(s) éligible(s)")
+
+    def _get_dept_filtered(self):
+        """Retourne les participants filtrés par département (ou tous si aucun CP)."""
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        return apply_dept_filter(self.participants, selected)
+
     def _pick_csv(self):
         path = filedialog.askopenfilename(
             title="Sélectionner le fichier CSV",
@@ -860,6 +935,13 @@ class FlashFMApp(tk.Tk):
                 text=f"✓  {len(self.participants)} participants uniques chargés")
             self._log(f"CSV : {len(self.participants)} participants "
                       f"({os.path.basename(path)})")
+            # Afficher le filtre départements seulement si le CSV contient des CP
+            has_cp = any(p.get('cp') for p in self.participants)
+            if has_cp:
+                self._dept_frame.pack(fill=tk.X, pady=(6, 0))
+                self._update_dept_info()
+            else:
+                self._dept_frame.pack_forget()
         except Exception as e:
             messagebox.showerror("Erreur CSV", str(e))
 
@@ -935,6 +1017,11 @@ class FlashFMApp(tk.Tk):
             return
         n = self.nb_winners.get()
 
+        filtered = self._get_dept_filtered()
+        if len(filtered) < len(self.participants):
+            self._log(f"Filtre départements : {len(filtered)} participant(s) sur "
+                      f"{len(self.participants)} après filtrage.")
+
         if not self.creds_path.get():
             if not messagebox.askyesno("Credentials manquants",
                 "Aucun fichier credentials Google sélectionné.\n\n"
@@ -942,7 +1029,7 @@ class FlashFMApp(tk.Tk):
                 "Continuer quand même sans vérification ?"):
                 return
             # Tirage simple sans vérification
-            pool = [p for p in self.participants if p['email']]
+            pool = [p for p in filtered if p['email']]
             if n > len(pool):
                 messagebox.showwarning("Pas assez de participants",
                     f"Seulement {len(pool)} participants avec email.")
@@ -968,7 +1055,7 @@ class FlashFMApp(tk.Tk):
         def run():
             try:
                 draw_with_checks(
-                    self.participants, n,
+                    filtered, n,
                     self.creds_path.get(), nom_jeu,
                     log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
@@ -1763,6 +1850,52 @@ class SportsApp(tk.Toplevel):
                                      fg=C_GREEN, font=("", 10))
         self.lbl_csv_info.pack(anchor="w", pady=(4, 0))
 
+        # Filtre départements (masqué jusqu'au chargement d'un CSV avec CP)
+        self._dept_frame = tk.Frame(f, bg=C_WHITE)
+        tk.Label(self._dept_frame, text="Filtrer par département :",
+                 bg=C_WHITE, font=("", 10, "bold")).pack(anchor="w", pady=(8, 2))
+        cb_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        cb_row.pack(anchor="w")
+        self._dept_vars = {}
+        for dept in DEPT_FILTER_DEFAULT:
+            var = tk.BooleanVar(value=False)
+            self._dept_vars[dept] = var
+            tk.Checkbutton(cb_row, text=f"Dép. {dept}", variable=var,
+                           bg=C_WHITE, font=("", 10),
+                           command=self._update_dept_info).pack(side=tk.LEFT, padx=4)
+        btn_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        btn_row.pack(anchor="w", pady=(4, 0))
+        ColorButton(btn_row, text="Tout cocher",   command=self._dept_check_all,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT, padx=(0, 6))
+        ColorButton(btn_row, text="Tout décocher", command=self._dept_uncheck_all,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT)
+        self.lbl_dept_info = tk.Label(self._dept_frame, text="", bg=C_WHITE,
+                                      fg=C_BLUE, font=("", 10))
+        self.lbl_dept_info.pack(anchor="w", pady=(4, 0))
+
+    def _dept_check_all(self):
+        for v in self._dept_vars.values():
+            v.set(True)
+        self._update_dept_info()
+
+    def _dept_uncheck_all(self):
+        for v in self._dept_vars.values():
+            v.set(False)
+        self._update_dept_info()
+
+    def _update_dept_info(self):
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        if not selected:
+            self.lbl_dept_info.config(text="Aucun filtre — tous les participants inclus")
+            return
+        pool = apply_dept_filter(self.participants, selected)
+        self.lbl_dept_info.config(
+            text=f"Dép. {', '.join(sorted(selected))} → {len(pool)} participant(s) éligible(s)")
+
+    def _get_dept_filtered(self):
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        return apply_dept_filter(self.participants, selected)
+
     def _pick_csv(self):
         path = filedialog.askopenfilename(
             title="Sélectionner le fichier CSV",
@@ -1775,6 +1908,12 @@ class SportsApp(tk.Toplevel):
                                 fg=C_DARK, font=("", 10))
             self.lbl_csv_info.config(
                 text=f"✓  {len(self.participants)} participants uniques chargés")
+            has_cp = any(p.get('cp') for p in self.participants)
+            if has_cp:
+                self._dept_frame.pack(fill=tk.X, pady=(6, 0))
+                self._update_dept_info()
+            else:
+                self._dept_frame.pack_forget()
         except Exception as e:
             messagebox.showerror("Erreur CSV", str(e), parent=self)
 
@@ -2230,12 +2369,17 @@ class SportsApp(tk.Toplevel):
             return
         n = self.nb_winners.get()
 
+        filtered = self._get_dept_filtered()
+        if len(filtered) < len(self.participants):
+            self._log(f"Filtre départements : {len(filtered)} participant(s) sur "
+                      f"{len(self.participants)} après filtrage.")
+
         if not self.creds_path.get() or not self.v_tab_name.get():
             if not messagebox.askyesno("Sans vérification",
                     "Credentials Google ou onglet non configurés.\n"
                     "Tirage simple sans vérification de la saison ?", parent=self):
                 return
-            pool = [p for p in self.participants if p['email']]
+            pool = [p for p in filtered if p['email']]
             self.winners     = random.sample(pool, min(n, len(pool)))
             self.winner_urls = {}
             self._update_tree()
@@ -2256,7 +2400,7 @@ class SportsApp(tk.Toplevel):
         def run():
             try:
                 sports_draw_with_checks(
-                    self.participants, n,
+                    filtered, n,
                     self.creds_path.get(), self.v_tab_name.get(),
                     log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
                     done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
@@ -2823,6 +2967,52 @@ class SpectacleApp(tk.Toplevel):
                                  bg=C_WHITE, fg=C_GRAY, font=("", 10))
         self.lbl_csv.pack(side=tk.LEFT, padx=12)
 
+        # Filtre départements (masqué jusqu'au chargement d'un CSV avec CP)
+        self._dept_frame = tk.Frame(f, bg=C_WHITE)
+        tk.Label(self._dept_frame, text="Filtrer par département :",
+                 bg=C_WHITE, font=("", 10, "bold")).pack(anchor="w", pady=(8, 2))
+        cb_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        cb_row.pack(anchor="w")
+        self._dept_vars = {}
+        for dept in DEPT_FILTER_DEFAULT:
+            var = tk.BooleanVar(value=False)
+            self._dept_vars[dept] = var
+            tk.Checkbutton(cb_row, text=f"Dép. {dept}", variable=var,
+                           bg=C_WHITE, font=("", 10),
+                           command=self._update_dept_info).pack(side=tk.LEFT, padx=4)
+        btn_row = tk.Frame(self._dept_frame, bg=C_WHITE)
+        btn_row.pack(anchor="w", pady=(4, 0))
+        ColorButton(btn_row, text="Tout cocher",   command=self._dept_check_all,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT, padx=(0, 6))
+        ColorButton(btn_row, text="Tout décocher", command=self._dept_uncheck_all,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT)
+        self.lbl_dept_info = tk.Label(self._dept_frame, text="", bg=C_WHITE,
+                                      fg=C_BLUE, font=("", 10))
+        self.lbl_dept_info.pack(anchor="w", pady=(4, 0))
+
+    def _dept_check_all(self):
+        for v in self._dept_vars.values():
+            v.set(True)
+        self._update_dept_info()
+
+    def _dept_uncheck_all(self):
+        for v in self._dept_vars.values():
+            v.set(False)
+        self._update_dept_info()
+
+    def _update_dept_info(self):
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        if not selected:
+            self.lbl_dept_info.config(text="Aucun filtre — tous les participants inclus")
+            return
+        pool = apply_dept_filter(self.participants, selected)
+        self.lbl_dept_info.config(
+            text=f"Dép. {', '.join(sorted(selected))} → {len(pool)} participant(s) éligible(s)")
+
+    def _get_dept_filtered(self):
+        selected = [d for d, v in self._dept_vars.items() if v.get()]
+        return apply_dept_filter(self.participants, selected)
+
     def _pick_csv(self):
         path = filedialog.askopenfilename(
             title="Fichier CSV participants",
@@ -2835,6 +3025,12 @@ class SpectacleApp(tk.Toplevel):
                 text=f"{os.path.basename(path)} — {len(self.participants)} participant(s)",
                 fg=C_DARK, font=("", 10))
             self._log(f"CSV chargé : {len(self.participants)} participant(s) uniques.")
+            has_cp = any(p.get('cp') for p in self.participants)
+            if has_cp:
+                self._dept_frame.pack(fill=tk.X, pady=(6, 0))
+                self._update_dept_info()
+            else:
+                self._dept_frame.pack_forget()
         except Exception as e:
             messagebox.showerror("Erreur CSV", str(e), parent=self)
 
@@ -3219,6 +3415,12 @@ class SpectacleApp(tk.Toplevel):
                 "Sélectionnez les credentials Google (③).", parent=self)
             return
         n = self.nb_winners.get()
+
+        filtered = self._get_dept_filtered()
+        if len(filtered) < len(self.participants):
+            self._log(f"Filtre départements : {len(filtered)} participant(s) sur "
+                      f"{len(self.participants)} après filtrage.")
+
         self.lbl_draw.config(text="⏳  Tirage en cours…", fg=C_GRAY)
         self.update()
 
@@ -3232,7 +3434,7 @@ class SpectacleApp(tk.Toplevel):
 
         threading.Thread(
             target=draw_with_checks,
-            args=(self.participants, n, self.creds_path.get(),
+            args=(filtered, n, self.creds_path.get(),
                   self.gv['nom_jeu'].get(),
                   lambda m: self.after(0, lambda mm=m: self._log(mm)),
                   done_cb, error_cb),
