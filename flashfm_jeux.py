@@ -1358,7 +1358,7 @@ class FlashFMApp(tk.Tk):
 #  Clubs data & Dropbox utilities (Sports variant)
 # ══════════════════════════════════════════════════════════
 
-DEFAULT_ROOT       = "/Users/pascal/Dropbox/Billets"
+DEFAULT_ROOT       = "/Users/pascal/Dropbox/Billets"  # remplacé par la config si disponible
 SPORTS_CONFIG_PATH = os.path.join(BASE_DIR, "flashfm_sports.json")
 
 
@@ -1477,8 +1477,13 @@ def dropbox_refresh_access_token(app_key, app_secret, refresh_token):
     return resp['access_token']
 
 
-def _get_dropbox_root():
-    """Lit ~/.dropbox/info.json pour détecter la racine locale Dropbox."""
+def _get_dropbox_root(configured_root=None):
+    """Détecte la racine locale Dropbox.
+    Essaie dans l'ordre :
+      1. ~/.dropbox/info.json  (ancien style)
+      2. ~/Library/CloudStorage/Dropbox  (macOS 12.3+ / nouveau style)
+      3. Extrait du chemin configuré (remonte jusqu'au dossier 'Dropbox')
+    """
     for candidate in (
         os.path.expanduser("~/.dropbox/info.json"),
         os.path.expanduser("~/.dropbox/instance1/info.json"),
@@ -1486,12 +1491,19 @@ def _get_dropbox_root():
         try:
             with open(candidate, encoding='utf-8') as f:
                 data = json.load(f)
-            return (data.get('personal', {}).get('path') or
+            path = (data.get('personal', {}).get('path') or
                     data.get('business', {}).get('path'))
+            if path:
+                return path
         except Exception:
             pass
-    # Fallback : remonte le chemin racine pour trouver le dossier "Dropbox"
-    parts = os.path.normpath(DEFAULT_ROOT).split(os.sep)
+    # macOS nouveau style (CloudStorage)
+    cs_path = os.path.expanduser("~/Library/CloudStorage/Dropbox")
+    if os.path.isdir(cs_path):
+        return cs_path
+    # Fallback : extraire depuis le chemin configuré ou DEFAULT_ROOT
+    ref = configured_root or DEFAULT_ROOT
+    parts = os.path.normpath(ref).split(os.sep)
     for i, part in enumerate(parts):
         if part.lower() == 'dropbox':
             joined = os.sep.join(parts[:i + 1])
@@ -1499,9 +1511,9 @@ def _get_dropbox_root():
     return None
 
 
-def local_to_dropbox_api_path(local_path):
+def local_to_dropbox_api_path(local_path, configured_root=None):
     """Convertit un chemin local en chemin API Dropbox (/Billets/xxx/...)."""
-    dbx_root = _get_dropbox_root()
+    dbx_root = _get_dropbox_root(configured_root)
     if not dbx_root:
         return None
     norm_local = os.path.normpath(local_path)
@@ -1749,6 +1761,7 @@ class SportsApp(tk.Toplevel):
         self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
         self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
         self.v_dbx_refresh = tk.StringVar(value=cfg.get('dropbox_refresh_token', ''))
+        self.root_dir    = cfg.get('billets_root', DEFAULT_ROOT)
 
         self._build_header()
         self._build_scroll_area()
@@ -1996,10 +2009,17 @@ class SportsApp(tk.Toplevel):
         self.lbl_dbx_status.pack(anchor="w", pady=(2, 0))
         self._dbx_refresh_status()
 
-        # Dossier racine (affiché, non modifiable — hardcodé)
+        # Dossier racine e-billets
         tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 4))
-        tk.Label(f, text=f"Dossier racine : {DEFAULT_ROOT}",
-                 bg=C_WHITE, fg=C_GRAY, font=("", 9, "italic")).pack(anchor="w")
+        root_row = tk.Frame(f, bg=C_WHITE)
+        root_row.pack(fill=tk.X)
+        tk.Label(root_row, text="Dossier racine e-billets :",
+                 bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
+        ColorButton(root_row, text="📁  Choisir…", command=self._pick_root_dir,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT, padx=8)
+        self.lbl_root_dir = tk.Label(root_row, text=self.root_dir,
+                                     bg=C_WHITE, fg=C_DARK, font=("", 9))
+        self.lbl_root_dir.pack(side=tk.LEFT)
 
     def _pick_creds(self):
         path = filedialog.askopenfilename(
@@ -2009,6 +2029,17 @@ class SportsApp(tk.Toplevel):
             self.creds_path.set(path)
             self.lbl_creds.config(text=os.path.basename(path),
                                    fg=C_DARK, font=("", 10))
+
+    def _pick_root_dir(self):
+        path = filedialog.askdirectory(
+            title="Choisir le dossier racine des e-billets",
+            initialdir=self.root_dir if os.path.isdir(self.root_dir) else os.path.expanduser("~"))
+        if path:
+            self.root_dir = path
+            self.lbl_root_dir.config(text=path)
+            cfg = load_sports_config()
+            cfg['billets_root'] = path
+            save_sports_config(cfg)
 
     def _dbx_refresh_status(self):
         """Met à jour le label de statut Dropbox."""
@@ -2152,7 +2183,7 @@ class SportsApp(tk.Toplevel):
     def _on_partner_change(self):
         partner = self.v_partner.get()
         if partner:
-            path = os.path.join(DEFAULT_ROOT, partner)
+            path = os.path.join(self.root_dir, partner)
             self.lbl_partner_path.config(
                 text=f"📁  {path}",
                 fg=C_DARK if os.path.isdir(path) else C_RED)
@@ -2178,7 +2209,7 @@ class SportsApp(tk.Toplevel):
             self.lbl_opposing_path.config(text="")
             self.lbl_tickets_found.config(text="")
             return
-        path = os.path.join(DEFAULT_ROOT, partner, opposing)
+        path = os.path.join(self.root_dir, partner, opposing)
         self.lbl_opposing_path.config(
             text=f"📁  {path}",
             fg=C_DARK if os.path.isdir(path) else C_RED)
@@ -2240,7 +2271,7 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs[name] = []
         save_clubs(self.clubs)
-        os.makedirs(os.path.join(DEFAULT_ROOT, name), exist_ok=True)
+        os.makedirs(os.path.join(self.root_dir, name), exist_ok=True)
         self.v_partner.set(name)
         self._refresh_partners()
         self._log(f"Club partenaire ajouté : {name}")
@@ -2254,8 +2285,8 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs[new] = self.clubs.pop(old)
         save_clubs(self.clubs)
-        src = os.path.join(DEFAULT_ROOT, old)
-        dst = os.path.join(DEFAULT_ROOT, new)
+        src = os.path.join(self.root_dir, old)
+        dst = os.path.join(self.root_dir, new)
         if os.path.isdir(src):
             os.rename(src, dst)
         self.v_partner.set(new)
@@ -2290,7 +2321,7 @@ class SportsApp(tk.Toplevel):
             return
         self.clubs.setdefault(partner, []).append(name)
         save_clubs(self.clubs)
-        folder = os.path.join(DEFAULT_ROOT, partner, name)
+        folder = os.path.join(self.root_dir, partner, name)
         os.makedirs(folder, exist_ok=True)
         self._refresh_opposing()
         self.v_opposing.set(name)
@@ -2308,8 +2339,8 @@ class SportsApp(tk.Toplevel):
         if old in lst:
             lst[lst.index(old)] = new
         save_clubs(self.clubs)
-        src = os.path.join(DEFAULT_ROOT, partner, old)
-        dst = os.path.join(DEFAULT_ROOT, partner, new)
+        src = os.path.join(self.root_dir, partner, old)
+        dst = os.path.join(self.root_dir, partner, new)
         if os.path.isdir(src):
             os.rename(src, dst)
         self._refresh_opposing()
@@ -2464,7 +2495,7 @@ class SportsApp(tk.Toplevel):
                 parent=self)
             return
 
-        tickets_dir = os.path.join(DEFAULT_ROOT, partner, opposing)
+        tickets_dir = os.path.join(self.root_dir, partner, opposing)
         if not os.path.isdir(tickets_dir):
             messagebox.showerror("Dossier introuvable",
                 f"Dossier introuvable :\n{tickets_dir}", parent=self)
@@ -2509,7 +2540,7 @@ class SportsApp(tk.Toplevel):
                 url = ''
                 if token:
                     try:
-                        api_path = local_to_dropbox_api_path(winner_dir)
+                        api_path = local_to_dropbox_api_path(winner_dir, self.root_dir)
                         if api_path:
                             # Retry jusqu'à 5 fois (Dropbox peut prendre du temps à synchroniser)
                             for attempt in range(1, 6):
@@ -2870,6 +2901,7 @@ class SpectacleApp(tk.Toplevel):
         self.v_dbx_key     = tk.StringVar(value=cfg.get('dropbox_app_key', ''))
         self.v_dbx_secret  = tk.StringVar(value=cfg.get('dropbox_app_secret', ''))
         self.v_dbx_refresh = tk.StringVar(value=cfg.get('dropbox_refresh_token', ''))
+        self.root_dir     = cfg.get('billets_root', DEFAULT_ROOT)
 
         self._build_header()
         self._build_scroll_area()
@@ -3097,8 +3129,15 @@ class SpectacleApp(tk.Toplevel):
         self._dbx_refresh_status()
 
         tk.Frame(f, bg=C_LGRAY, height=1).pack(fill=tk.X, pady=(8, 4))
-        tk.Label(f, text=f"Dossier racine : {DEFAULT_ROOT}",
-                 bg=C_WHITE, fg=C_GRAY, font=("", 9, "italic")).pack(anchor="w")
+        root_row = tk.Frame(f, bg=C_WHITE)
+        root_row.pack(fill=tk.X)
+        tk.Label(root_row, text="Dossier racine e-billets :",
+                 bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
+        ColorButton(root_row, text="📁  Choisir…", command=self._pick_root_dir,
+                    bg=C_GRAY, font_size=9).pack(side=tk.LEFT, padx=8)
+        self.lbl_root_dir = tk.Label(root_row, text=self.root_dir,
+                                     bg=C_WHITE, fg=C_DARK, font=("", 9))
+        self.lbl_root_dir.pack(side=tk.LEFT)
 
     def _pick_creds(self):
         path = filedialog.askopenfilename(
@@ -3108,6 +3147,17 @@ class SpectacleApp(tk.Toplevel):
             self.creds_path.set(path)
             self.lbl_creds.config(text=os.path.basename(path),
                                    fg=C_DARK, font=("", 10))
+
+    def _pick_root_dir(self):
+        path = filedialog.askdirectory(
+            title="Choisir le dossier racine des e-billets",
+            initialdir=self.root_dir if os.path.isdir(self.root_dir) else os.path.expanduser("~"))
+        if path:
+            self.root_dir = path
+            self.lbl_root_dir.config(text=path)
+            cfg = load_spectacle_config()
+            cfg['billets_root'] = path
+            save_spectacle_config(cfg)
 
     def _dbx_refresh_status(self):
         if self.v_dbx_refresh.get().strip():
@@ -3169,7 +3219,7 @@ class SpectacleApp(tk.Toplevel):
     def _build_step4(self):
         f = self._section("Type d'événements & Événements", "④")
         tk.Label(f,
-                 text=f"Les e-billets sont cherchés dans {DEFAULT_ROOT}"
+                 text=f"Les e-billets sont cherchés dans {self.root_dir}"
                       "/[type]/[événement]/",
                  bg=C_WHITE, fg="#666", font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
@@ -3247,7 +3297,7 @@ class SpectacleApp(tk.Toplevel):
         if not (t and ev):
             self.lbl_tickets.config(text="")
             return
-        folder = os.path.join(DEFAULT_ROOT, t, ev)
+        folder = os.path.join(self.root_dir, t, ev)
         if not os.path.isdir(folder):
             self.lbl_tickets.config(
                 text=f"⚠  Dossier introuvable : {folder}", fg=C_RED)
@@ -3299,7 +3349,7 @@ class SpectacleApp(tk.Toplevel):
         self._refresh_types()
         self.v_type_evt.set(name)
         self._on_type_change()
-        os.makedirs(os.path.join(DEFAULT_ROOT, name), exist_ok=True)
+        os.makedirs(os.path.join(self.root_dir, name), exist_ok=True)
 
     def _rename_type(self):
         old = self.v_type_evt.get()
@@ -3310,8 +3360,8 @@ class SpectacleApp(tk.Toplevel):
             return
         self.events[new] = self.events.pop(old)
         save_events(self.events)
-        src = os.path.join(DEFAULT_ROOT, old)
-        dst = os.path.join(DEFAULT_ROOT, new)
+        src = os.path.join(self.root_dir, old)
+        dst = os.path.join(self.root_dir, new)
         if os.path.isdir(src):
             os.rename(src, dst)
         self._refresh_types()
@@ -3343,7 +3393,7 @@ class SpectacleApp(tk.Toplevel):
             return
         self.events.setdefault(t, []).append(name)
         save_events(self.events)
-        os.makedirs(os.path.join(DEFAULT_ROOT, t, name), exist_ok=True)
+        os.makedirs(os.path.join(self.root_dir, t, name), exist_ok=True)
         self._refresh_events()
         self.v_event.set(name)
         self._update_tickets_count()
@@ -3360,8 +3410,8 @@ class SpectacleApp(tk.Toplevel):
         if old in lst:
             lst[lst.index(old)] = new
         save_events(self.events)
-        src = os.path.join(DEFAULT_ROOT, t, old)
-        dst = os.path.join(DEFAULT_ROOT, t, new)
+        src = os.path.join(self.root_dir, t, old)
+        dst = os.path.join(self.root_dir, t, new)
         if os.path.isdir(src):
             os.rename(src, dst)
         self._refresh_events()
@@ -3476,7 +3526,7 @@ class SpectacleApp(tk.Toplevel):
             messagebox.showwarning("Événement manquant",
                 "Sélectionnez type et événement (④).", parent=self)
             return
-        tickets_dir = os.path.join(DEFAULT_ROOT, type_evt, event)
+        tickets_dir = os.path.join(self.root_dir, type_evt, event)
         if not os.path.isdir(tickets_dir):
             messagebox.showerror("Dossier introuvable",
                 f"Dossier introuvable :\n{tickets_dir}", parent=self)
@@ -3522,7 +3572,7 @@ class SpectacleApp(tk.Toplevel):
                 url = ''
                 if token:
                     try:
-                        api_path = local_to_dropbox_api_path(winner_dir)
+                        api_path = local_to_dropbox_api_path(winner_dir, self.root_dir)
                         if api_path:
                             for attempt in range(1, 6):
                                 try:
