@@ -1640,6 +1640,11 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
         return {"top": s, "bottom": s, "left": s, "right": s}
 
     ws.spreadsheet.batch_update({"requests": [
+        # ── Dé-fusion préventive (évite l'erreur si fusion existante) ──────
+        {"unmergeCells": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": start_row - 1, "endRowIndex": start_row,
+                      "startColumnIndex": 0, "endColumnIndex": 26}}},
         # ── Titre ──────────────────────────────────────────────────────────
         {"mergeCells": {
             "range": {"sheetId": sid,
@@ -2634,14 +2639,19 @@ class SportsApp(tk.Toplevel):
     # ⑧ Modèle d'email & Envoi
     def _build_step8(self):
         f = self._section("Modèle d'email & Envoi", "⑧")
-        row = tk.Frame(f, bg=C_WHITE)
-        row.pack(fill=tk.X)
-        tk.Label(row, text="Modèle :", bg=C_WHITE,
+        tpl_row = tk.Frame(f, bg=C_WHITE)
+        tpl_row.pack(fill=tk.X)
+        tk.Label(tpl_row, text="Modèle :", bg=C_WHITE,
                  font=("", 10)).pack(side=tk.LEFT)
         self.tpl_var   = tk.StringVar()
-        self.tpl_combo = ttk.Combobox(row, textvariable=self.tpl_var,
-                                       state="readonly", width=34, font=("", 10))
+        self.tpl_combo = ttk.Combobox(tpl_row, textvariable=self.tpl_var,
+                                       state="readonly", width=28, font=("", 10))
         self.tpl_combo.pack(side=tk.LEFT, padx=8)
+        for txt, cmd in [("＋ Nouveau", self._tpl_new),
+                          ("✏  Modifier", self._tpl_edit),
+                          ("🗑  Supprimer", self._tpl_del)]:
+            ColorButton(tpl_row, text=txt, command=cmd,
+                        bg="#444", font_size=9, padx=10, pady=5).pack(side=tk.LEFT, padx=3)
         self._refresh_templates()
         tk.Label(f,
                  text="Variable supplémentaire disponible : {lien_dropbox}",
@@ -2659,6 +2669,7 @@ class SportsApp(tk.Toplevel):
         self.lbl_send.pack(anchor="w", pady=(8, 0))
 
     def _refresh_templates(self):
+        self.templates = load_templates()
         names = [t['name'] for t in self.templates]
         self.tpl_combo['values'] = names
         if names and not self.tpl_var.get():
@@ -2667,6 +2678,46 @@ class SportsApp(tk.Toplevel):
     def _get_tpl(self):
         name = self.tpl_var.get()
         return next((t for t in self.templates if t['name'] == name), None)
+
+    def _tpl_new(self):
+        def on_save(tpl):
+            self.templates = load_templates()
+            self.templates.append(tpl)
+            save_templates(self.templates)
+            self._refresh_templates()
+            self.tpl_var.set(tpl['name'])
+            self._log(f"Modèle « {tpl['name']} » créé.")
+        TemplateEditor(self, on_save=on_save)
+
+    def _tpl_edit(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            messagebox.showwarning("Sélection", "Sélectionnez un modèle.", parent=self)
+            return
+        def on_save(updated):
+            self.templates = load_templates()
+            try:
+                idx = next(i for i, t in enumerate(self.templates) if t['name'] == tpl['name'])
+                self.templates[idx] = updated
+            except StopIteration:
+                self.templates.append(updated)
+            save_templates(self.templates)
+            self._refresh_templates()
+            self.tpl_var.set(updated['name'])
+            self._log(f"Modèle « {updated['name']} » mis à jour.")
+        TemplateEditor(self, template=tpl, on_save=on_save)
+
+    def _tpl_del(self):
+        tpl = self._get_tpl()
+        if not tpl:
+            return
+        if messagebox.askyesno("Supprimer",
+                f"Supprimer le modèle « {tpl['name']} » ?", parent=self):
+            self.templates = load_templates()
+            self.templates = [t for t in self.templates if t['name'] != tpl['name']]
+            save_templates(self.templates)
+            self._refresh_templates()
+            self._log(f"Modèle « {tpl['name']} » supprimé.")
 
     def _variables(self, winner=None):
         d = {k: v.get() for k, v in self.gv.items()}
