@@ -15,7 +15,7 @@ from pathlib import Path
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ── Configuration ────────────────────────────────────────────────────────────
+# ── Configuration ────────────────────────────────────────────
 SPREADSHEET_ID = "1pAoPThNMkDNh7zUMTEAJiltKaLAMioNAMCT1-ELqQnU"
 SHEET_GID = 821980008
 CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
@@ -34,7 +34,7 @@ RE_POSTAL_CITY = re.compile(r"\b(\d{5})\s+([A-ZÀ-Ÿa-zà-ÿ\s\-]+?)(?=[,;\n]|$)
 RE_POSTAL = re.compile(r"\b\d{5}\b")
 
 
-# ── Parsing helpers ───────────────────────────────────────────────────────────
+# ── Parsing helpers ───────────────────────────────────────────────
 
 def normalise_phone(raw: str) -> str:
     """Formate un numéro de téléphone en 'xx xx xx xx xx'."""
@@ -58,13 +58,13 @@ def extract_fields(coordonnees: str) -> dict:
     # Normaliser les retours à la ligne en espaces
     text = re.sub(r"\s*[\r\n]+\s*", " ", coordonnees).strip()
 
-    # ── email ────────────────────────────────────────────────────────────────
+    # ── email ──────────────────────────────────────────────────────────────────────
     email_match = RE_EMAIL.search(text)
     if email_match:
         result["email"] = email_match.group(0).strip()
         text = text[:email_match.start()] + " " + text[email_match.end():]
 
-    # ── téléphone ────────────────────────────────────────────────────────────
+    # ── téléphone ──────────────────────────────────────────────────────────────────────
     phone_match = RE_PHONE.search(text)
     if phone_match:
         result["telephone"] = normalise_phone(phone_match.group(0))
@@ -73,15 +73,12 @@ def extract_fields(coordonnees: str) -> dict:
     # Normaliser les espaces multiples
     text = re.sub(r"\s+", " ", text).strip()
 
-    # ── ville via code postal (XXXXX NomVille) ───────────────────────────────
+    # ── ville via code postal (XXXXX NomVille) ─────────────────────────────────────────
     city_match = RE_POSTAL_CITY.search(text)
     if city_match:
         result["ville"] = city_match.group(2).strip().title()
-        # Conserver uniquement ce qui précède le code postal,
-        # en retirant les mots d'adresse juste avant (ceux qui commencent par un chiffre)
         prefix = text[:city_match.start()].strip().rstrip(",;")
         suffix = text[city_match.end():].strip().lstrip(",;")
-        # Retirer les tokens d'adresse (numéro de rue, etc.) en fin de préfixe
         prefix_words = prefix.split()
         clean_prefix_words = []
         hit_address = False
@@ -93,12 +90,11 @@ def extract_fields(coordonnees: str) -> dict:
         text = " ".join(clean_prefix_words) + (" " + suffix if suffix else "")
         text = re.sub(r"\s+", " ", text).strip()
     else:
-        # Code postal seul sans ville lisible → retirer
         postal_match = RE_POSTAL.search(text)
         if postal_match:
             text = (text[:postal_match.start()] + " " + text[postal_match.end():]).strip()
 
-    # ── Nom / Prénom ─────────────────────────────────────────────────────────
+    # ── Nom / Prénom ──────────────────────────────────────────────────────────────────────
     def assign_name_city(words):
         """words[0]=Nom, words[1]=Prénom, words[2:]=Ville (si ville pas encore connue)."""
         if words:
@@ -115,10 +111,8 @@ def extract_fields(coordonnees: str) -> dict:
         if parts:
             first_words = parts[0].split()
             if len(first_words) >= 2 and len(parts) == 1:
-                # Token unique multi-mots : Nom Prénom [Ville] tout en un
                 assign_name_city(first_words)
             elif len(first_words) >= 3 and len(parts) >= 1:
-                # Première partie a 3+ mots → words[0]=Nom, words[1]=Prénom, la suite à la ville
                 result["nom"] = first_words[0].upper()
                 result["prenom"] = " ".join(first_words[1:]).title()
                 if not result["ville"] and len(parts) > 1:
@@ -136,14 +130,61 @@ def extract_fields(coordonnees: str) -> dict:
     return result
 
 
-# ── Google Sheets ─────────────────────────────────────────────────────────────
+def _phone_key(phone: str) -> str:
+    """Normalise un numéro en chiffres seuls pour la comparaison."""
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("33") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    return digits
+
+
+def get_existing_keys(ws) -> set:
+    """
+    Lit les colonnes B (Prénom), C (Nom), D (Téléphone), G (Email)
+    du Google Sheet et retourne un set de clés d'identification.
+    Clé = téléphone normalisé si disponible, sinon email en minuscules,
+    sinon nom+prénom en minuscules.
+    """
+    all_values = ws.get_all_values()
+    keys = set()
+    for row in all_values:
+        if len(row) < 4:
+            continue
+        prenom = row[1].strip() if len(row) > 1 else ""
+        nom    = row[2].strip() if len(row) > 2 else ""
+        tel    = row[3].strip() if len(row) > 3 else ""
+        email  = row[6].strip().lower() if len(row) > 6 else ""
+        phone_digits = _phone_key(tel)
+        if phone_digits and len(phone_digits) >= 9:
+            keys.add("tel:" + phone_digits)
+        if email and "@" in email:
+            keys.add("email:" + email)
+        if nom or prenom:
+            keys.add("name:" + (nom + prenom).lower().replace(" ", ""))
+    return keys
+
+
+def record_key(rec: dict) -> list:
+    """Retourne toutes les clés possibles pour un enregistrement CSV."""
+    keys = []
+    phone_digits = _phone_key(rec.get("telephone", ""))
+    if phone_digits and len(phone_digits) >= 9:
+        keys.append("tel:" + phone_digits)
+    email = rec.get("email", "").strip().lower()
+    if email and "@" in email:
+        keys.append("email:" + email)
+    nom    = rec.get("nom", "").strip()
+    prenom = rec.get("prenom", "").strip()
+    if nom or prenom:
+        keys.append("name:" + (nom + prenom).lower().replace(" ", ""))
+    return keys
+
 
 def get_worksheet():
     """Retourne la feuille Google Sheets cible."""
     creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)
     client = gspread.authorize(creds)
     spreadsheet = client.open_by_key(SPREADSHEET_ID)
-    # Trouver l'onglet par son gid
     for ws in spreadsheet.worksheets():
         if ws.id == SHEET_GID:
             return ws
@@ -156,38 +197,35 @@ def find_first_empty_row(ws, empty_threshold: int = 20) -> int:
     en colonne B, définie comme la dernière ligne non vide suivie d'au moins
     `empty_threshold` lignes vides consécutives.
     """
-    col_b = ws.col_values(2)  # colonne B (index 2)
-
-    # Parcourir depuis la fin pour trouver le dernier groupe de données
-    # suivi d'au moins `empty_threshold` lignes vides
+    col_b = ws.col_values(2)
     n = len(col_b)
     consecutive_empty = 0
-    last_data_row = 0  # 1-indexé
+    last_data_row = 0
 
     for i in range(n - 1, -1, -1):
         if col_b[i].strip():
             if consecutive_empty >= empty_threshold or last_data_row == 0:
-                last_data_row = i + 1  # convertir en index 1-based
+                last_data_row = i + 1
                 break
             else:
                 consecutive_empty = 0
         else:
             consecutive_empty += 1
 
-    # Si on n'a pas encore trouvé (boucle terminée sans break)
     if last_data_row == 0:
         for i in range(n - 1, -1, -1):
             if col_b[i].strip():
                 last_data_row = i + 1
                 break
 
-    return last_data_row + 1  # ligne suivant la dernière donnée
+    return last_data_row + 1
 
 
-def write_to_sheet(records: list, log_callback=None) -> int:
+def write_to_sheet(records: list, log_callback=None) -> tuple:
     """
-    Écrit les enregistrements dans le Google Sheet.
-    Retourne le nombre de lignes ajoutées.
+    Écrit les enregistrements nouveaux dans le Google Sheet.
+    Déduplique contre les entrées déjà présentes.
+    Retourne (nb_ajoutés, nb_ignorés).
     """
     def log(msg):
         if log_callback:
@@ -195,30 +233,42 @@ def write_to_sheet(records: list, log_callback=None) -> int:
 
     log("Connexion à Google Sheets...")
     ws = get_worksheet()
+
+    log("Lecture des inscrits déjà présents dans la feuille...")
+    existing_keys = get_existing_keys(ws)
+    log(f"  → {len(existing_keys)} clés d'identification trouvées.")
+
     start_row = find_first_empty_row(ws)
-    log(f"Première ligne vide : {start_row}")
+    log(f"Première ligne disponible : {start_row}")
 
     rows_to_append = []
+    skipped = 0
     for rec in records:
-        # On prépare une ligne avec les colonnes A→G
-        # A=vide, B=Prénom, C=Nom, D=Téléphone, E=Ville, F=vide, G=Email
+        keys = record_key(rec)
+        if any(k in existing_keys for k in keys):
+            skipped += 1
+            continue
         row = ["", rec["prenom"], rec["nom"], rec["telephone"], rec["ville"], "", rec["email"]]
         rows_to_append.append(row)
+        for k in keys:
+            existing_keys.add(k)
+
+    if skipped:
+        log(f"  → {skipped} inscrit(s) déjà présent(s) ignoré(s).")
 
     if not rows_to_append:
-        log("Aucun enregistrement à écrire.")
-        return 0
+        log("Aucun nouvel enregistrement à écrire.")
+        return 0, skipped
 
-    # Écriture en batch
     end_row = start_row + len(rows_to_append) - 1
     cell_range = f"A{start_row}:G{end_row}"
-    log(f"Écriture de {len(rows_to_append)} ligne(s) dans {cell_range}...")
+    log(f"Écriture de {len(rows_to_append)} nouvelle(s) ligne(s) dans {cell_range}...")
     ws.update(cell_range, rows_to_append, value_input_option="USER_ENTERED")
-    log(f"✓ {len(rows_to_append)} ligne(s) ajoutée(s) avec succès.")
-    return len(rows_to_append)
+    log(f"✓ {len(rows_to_append)} joueur(s) ajouté(s) avec succès.")
+    return len(rows_to_append), skipped
 
 
-# ── Lecture CSV ───────────────────────────────────────────────────────────────
+# ── Lecture CSV ─────────────────────────────────────────────────────────────────
 
 def parse_csv(filepath: str) -> list:
     """
@@ -233,13 +283,11 @@ def parse_csv(filepath: str) -> list:
     last_error = None
 
     for enc in encodings:
-        # Essayer d'abord ';' (exports français), puis ',' puis détection auto
         for delimiter in [";", ",", "\t"]:
             try:
                 with open(filepath, newline="", encoding=enc) as f:
                     reader = csv.DictReader(f, delimiter=delimiter)
                     candidate = list(reader)
-                # Valider : au moins 2 colonnes et au moins 1 ligne de données
                 if candidate and len(candidate[0].keys()) >= 2:
                     rows = candidate
                     break
@@ -254,7 +302,6 @@ def parse_csv(filepath: str) -> list:
             f"Dernière erreur : {last_error}"
         )
 
-    # Trouver la colonne Coordonnees (insensible à la casse, ignore BOM/espaces)
     coord_col = None
     for col in rows[0].keys():
         col_clean = col.strip().lstrip("﻿").lower()
@@ -271,7 +318,6 @@ def parse_csv(filepath: str) -> list:
 
     for row in rows:
         raw = row.get(coord_col, "") or ""
-        # Nettoyer le contenu multi-lignes (retours à la ligne dans le champ)
         raw = " ".join(raw.splitlines()).strip()
         if raw:
             fields = extract_fields(raw)
@@ -281,7 +327,7 @@ def parse_csv(filepath: str) -> list:
     return records
 
 
-# ── Interface graphique ───────────────────────────────────────────────────────
+# ── Interface graphique ───────────────────────────────────────────────────────────────
 
 class App(tk.Tk):
     def __init__(self):
@@ -302,19 +348,18 @@ class App(tk.Tk):
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _build_ui(self):
-        BG       = "#1e1e2e"   # fond général
-        BG2      = "#2a2a3e"   # fond des cadres intérieurs
-        FG       = "#cdd6f4"   # texte principal
-        FG_DIM   = "#aaaacc"   # texte secondaire
-        ACCENT   = "#e8c547"   # jaune FlashCash
-        BTN_BROWSE  = "#4a4a7a"   # bouton Parcourir
-        BTN_RESET   = "#5a3a6a"   # bouton Réinitialiser
-        BTN_IMPORT  = "#2d6a4f"   # bouton principal (vert foncé)
-        BTN_DONE    = "#1a5c38"   # bouton après succès
+        BG       = "#1e1e2e"
+        BG2      = "#2a2a3e"
+        FG       = "#cdd6f4"
+        FG_DIM   = "#aaaacc"
+        ACCENT   = "#e8c547"
+        BTN_BROWSE  = "#4a4a7a"
+        BTN_RESET   = "#5a3a6a"
+        BTN_IMPORT  = "#2d6a4f"
+        BTN_DONE    = "#1a5c38"
 
         self.configure(bg=BG)
 
-        # ── En-tête ──────────────────────────────────────────────────────────
         header = tk.Frame(self, bg="#12122a", pady=14)
         header.pack(fill="x")
         tk.Label(
@@ -326,7 +371,6 @@ class App(tk.Tk):
             font=("Helvetica", 10), fg=FG_DIM, bg="#12122a"
         ).pack()
 
-        # ── Sélection fichier ─────────────────────────────────────────────────
         file_frame = tk.LabelFrame(
             self, text=" Fichier CSV ",
             bg=BG, fg=FG, padx=10, pady=8
@@ -344,11 +388,11 @@ class App(tk.Tk):
         tk.Button(
             file_frame, text="Parcourir…", command=self._browse,
             bg=BTN_BROWSE, fg="white", activebackground="#6060a0",
-            activeforeground="white", relief="flat", padx=12, pady=5,
-            font=("Helvetica", 10, "bold"), cursor="hand2", bd=0
+            activeforeground="white", relief="raised", padx=12, pady=5,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,
+            highlightthickness=0
         ).pack(side="left")
 
-        # ── Prévisualisation ──────────────────────────────────────────────────
         preview_frame = tk.LabelFrame(
             self, text=" Aperçu des données parsées ",
             bg=BG, fg=FG, padx=10, pady=6
@@ -383,7 +427,6 @@ class App(tk.Tk):
         self._tree.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
 
-        # ── Journal ───────────────────────────────────────────────────────────
         log_frame = tk.LabelFrame(
             self, text=" Journal ",
             bg=BG, fg=FG, padx=10, pady=6
@@ -397,7 +440,6 @@ class App(tk.Tk):
         )
         self._log.pack(fill="x")
 
-        # ── Boutons d'action ──────────────────────────────────────────────────
         btn_frame = tk.Frame(self, bg=BG, pady=12)
         btn_frame.pack()
 
@@ -407,8 +449,9 @@ class App(tk.Tk):
             font=("Helvetica", 12, "bold"),
             bg=BTN_IMPORT, fg="white",
             activebackground="#3d8b62", activeforeground="white",
-            disabledforeground="#aaaaaa",
-            relief="flat", padx=22, pady=10, cursor="hand2", bd=0
+            disabledforeground="#888888", disabledbackground="#1a3d2b",
+            relief="raised", padx=22, pady=10, cursor="hand2", bd=2,
+            highlightthickness=0
         )
         self._btn_import.pack(side="left", padx=8)
         self._BTN_IMPORT_COLOR = BTN_IMPORT
@@ -418,11 +461,12 @@ class App(tk.Tk):
             btn_frame, text="Réinitialiser", command=self._reset,
             bg=BTN_RESET, fg="white",
             activebackground="#7a4a8a", activeforeground="white",
-            relief="flat", padx=14, pady=10,
-            font=("Helvetica", 10, "bold"), cursor="hand2", bd=0
+            relief="raised", padx=14, pady=10,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,
+            highlightthickness=0
         ).pack(side="left", padx=8)
 
-    # ── Actions ───────────────────────────────────────────────────────────────
+    # ── Actions ───────────────────────────────────────────────────────────────────────
 
     def _log_msg(self, msg: str):
         self._log.configure(state="normal")
@@ -465,8 +509,10 @@ class App(tk.Tk):
 
         if not messagebox.askyesno(
             "Confirmation",
-            f"Écrire {len(self._records)} ligne(s) dans Google Sheets ?\n\n"
-            "Les données seront ajoutées à la suite de la liste existante."
+            f"{len(self._records)} inscrit(s) dans le fichier CSV.\n\n"
+            "L'application ignorera automatiquement ceux déjà présents\n"
+            "dans Google Sheets et n'ajoutera que les nouveaux.\n\n"
+            "Continuer ?"
         ):
             return
 
@@ -474,11 +520,11 @@ class App(tk.Tk):
         self.update_idletasks()
 
         try:
-            count = write_to_sheet(self._records, log_callback=self._log_msg)
-            messagebox.showinfo(
-                "Import réussi",
-                f"{count} joueur(s) ajouté(s) dans Google Sheets avec succès."
-            )
+            added, skipped = write_to_sheet(self._records, log_callback=self._log_msg)
+            msg = f"{added} nouveau(x) joueur(s) ajouté(s) dans Google Sheets."
+            if skipped:
+                msg += f"\n{skipped} inscrit(s) déjà présent(s) ignoré(s)."
+            messagebox.showinfo("Import terminé", msg)
             self._btn_import.configure(text="✓  Import terminé", bg=self._BTN_DONE_COLOR, fg="white")
         except Exception as exc:
             messagebox.showerror("Erreur d'import", str(exc))
@@ -501,7 +547,7 @@ class App(tk.Tk):
         )
 
 
-# ── Point d'entrée ────────────────────────────────────────────────────────────
+# ── Point d'entrée ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     if not CREDENTIALS_FILE.exists():
