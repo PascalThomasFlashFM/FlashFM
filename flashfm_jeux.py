@@ -1704,8 +1704,12 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
 def sports_draw_with_checks(participants, n, creds_path, ws_name,
                              log_cb, done_cb, error_cb):
     """
-    Tirage au sort pour la variante sports.
-    Vérifie que le candidat n'a pas déjà gagné cette saison en lisant l'onglet sélectionné.
+    Tirage au sort pour la variante sports avec 3 règles d'exclusion :
+      1. Déjà gagnant cette saison (nom + prénom exact, onglet sélectionné).
+      2. Même nom de famille qu'un gagnant déjà tiré dans CE tirage
+         (pour éviter qu'une même famille gagne deux fois).
+      3. A gagné un cadeau dans les 6 derniers mois
+         (vérifié dans l'onglet « liste des gagnants »).
     N'écrit rien dans Google Sheets (l'export est une étape séparée).
     """
     sh       = _sheets_client(creds_path)
@@ -1714,28 +1718,86 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
     existing = extract_sports_winners(all_vals)
     log_cb(f"Onglet « {ws_name} » : {len(existing)} gagnant(s) trouvé(s) cette saison.")
 
+    # ── Charger l'historique 6 mois depuis « liste des gagnants » ──────────
+    six_months_ago = datetime.now() - timedelta(days=183)
+    hist_rows    = []
+    hist_nom_col = 0
+    hist_prn_col = 1
+    hist_date_cols = []
+    use_history = False
+    try:
+        hist_ws   = sh.worksheet("liste des gagnants")
+        hist_vals = hist_ws.get_all_values()
+        header_row = hist_vals[2] if len(hist_vals) > 2 else []
+        c_nom    = _find_col(header_row, ['nom'])
+        c_prn    = _find_col(header_row, ['prenom', 'prénom'])
+        hist_nom_col = c_nom if c_nom is not None else 0
+        hist_prn_col = c_prn if c_prn is not None else 1
+        hist_date_cols = [i for i in range(5, len(header_row))
+                          if header_row[i].strip()]
+        hist_rows = [row for i, row in enumerate(hist_vals)
+                     if i >= 3 and any(c.strip() for c in row)]
+        log_cb(f"Historique « liste des gagnants » : {len(hist_rows)} ligne(s) chargée(s).")
+        use_history = True
+    except Exception as exc:
+        log_cb(f"⚠  « liste des gagnants » introuvable ({exc})"
+               f" — vérification 6 mois ignorée.")
+
     pool = [p for p in participants if p['email']]
     random.shuffle(pool)
-    winners, excluded = [], 0
+    winners    = []
+    drawn_noms = set()   # noms de famille déjà dans ce tirage
+    excluded   = 0
 
     for candidate in pool:
         if len(winners) >= n:
             break
-        nom    = normalize(candidate['nom'])
-        prenom = normalize(candidate['prenom'])
-        already = any(normalize(en) == nom and normalize(ep) == prenom
-                      for en, ep in existing)
-        if already:
+        nom_norm = normalize(candidate['nom'])
+        prn_norm = normalize(candidate['prenom'])
+
+        # ── Règle 1 : déjà gagnant cette saison (nom + prénom) ─────────────
+        if any(normalize(en) == nom_norm and normalize(ep) == prn_norm
+               for en, ep in existing):
             excluded += 1
             log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
-                   f" — déjà gagnant cette saison → remplacé")
-        else:
-            winners.append(candidate)
-            log_cb(f"✓  {candidate['prenom']} {candidate['nom']}")
+                   f" — déjà gagnant cette saison → exclu")
+            continue
+
+        # ── Règle 2 : même nom de famille dans CE tirage (anti-famille) ─────
+        if nom_norm in drawn_noms:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                   f" — même nom qu'un gagnant déjà tiré → exclu")
+            continue
+
+        # ── Règle 3 : a gagné dans les 6 derniers mois ──────────────────────
+        if use_history:
+            recent_win = None
+            for row in hist_rows:
+                n_val = row[hist_nom_col].strip() if hist_nom_col < len(row) else ""
+                p_val = row[hist_prn_col].strip() if hist_prn_col < len(row) else ""
+                if normalize(n_val) == nom_norm and normalize(p_val) == prn_norm:
+                    for dc in hist_date_cols:
+                        if dc < len(row) and row[dc].strip():
+                            d = parse_date(row[dc])
+                            if d and d > six_months_ago:
+                                recent_win = d
+                                break
+                    break
+            if recent_win:
+                excluded += 1
+                log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                       f" — a gagné le {recent_win.strftime('%d/%m/%Y')}"
+                       f" (moins de 6 mois) → exclu")
+                continue
+
+        winners.append(candidate)
+        drawn_noms.add(nom_norm)
+        log_cb(f"✓  {candidate['prenom']} {candidate['nom']}")
 
     if len(winners) < n:
         error_cb(f"Seulement {len(winners)}/{n} gagnants éligibles "
-                 f"({excluded} déjà gagnant(s) cette saison).")
+                 f"({excluded} exclu(s) : déjà gagnant cette saison, même famille, ou < 6 mois).")
     done_cb(winners)
 
 
