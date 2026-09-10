@@ -1704,7 +1704,8 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
 def sports_draw_with_checks(participants, n, creds_path, ws_name,
                              log_cb, done_cb, error_cb):
     """
-    Tirage au sort pour la variante sports avec 3 règles d'exclusion :
+    Tirage au sort pour la variante sports avec 4 règles d'exclusion :
+      0. Présent dans l'onglet « Joueurs à bannir des jeux ».
       1. Déjà gagnant cette saison (nom + prénom exact, onglet sélectionné).
       2. Même nom de famille qu'un gagnant déjà tiré dans CE tirage
          (pour éviter qu'une même famille gagne deux fois).
@@ -1717,6 +1718,17 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
     all_vals = ws.get_all_values()
     existing = extract_sports_winners(all_vals)
     log_cb(f"Onglet « {ws_name} » : {len(existing)} gagnant(s) trouvé(s) cette saison.")
+
+    # ── Charger la liste des bannis ─────────────────────────────────────────
+    banned_rows = []
+    try:
+        banned_ws  = sh.worksheet("Joueurs à bannir des jeux")
+        all_banned = banned_ws.get_all_values()
+        banned_rows = [row for row in all_banned[1:] if any(c.strip() for c in row)]
+        log_cb(f"Liste des bannis : {len(banned_rows)} joueur(s) chargé(s).")
+    except Exception as exc:
+        log_cb(f"⚠  « Joueurs à bannir des jeux » introuvable ({exc})"
+               f" — vérification bannis ignorée.")
 
     # ── Charger l'historique 6 mois depuis « liste des gagnants » ──────────
     six_months_ago = datetime.now() - timedelta(days=183)
@@ -1754,6 +1766,19 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
             break
         nom_norm = normalize(candidate['nom'])
         prn_norm = normalize(candidate['prenom'])
+
+        # ── Règle 0 : joueur banni ──────────────────────────────────────────
+        is_banned = False
+        for brow in banned_rows:
+            row_text = normalize(' '.join(brow))
+            if nom_norm in row_text and prn_norm in row_text:
+                is_banned = True
+                break
+        if is_banned:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                   f" — présent dans la liste des bannis → exclu")
+            continue
 
         # ── Règle 1 : déjà gagnant cette saison (nom + prénom) ─────────────
         if any(normalize(en) == nom_norm and normalize(ep) == prn_norm
@@ -1797,7 +1822,7 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
 
     if len(winners) < n:
         error_cb(f"Seulement {len(winners)}/{n} gagnants éligibles "
-                 f"({excluded} exclu(s) : déjà gagnant cette saison, même famille, ou < 6 mois).")
+                 f"({excluded} exclu(s) : banni, déjà gagnant cette saison, même famille, ou < 6 mois).")
     done_cb(winners)
 
 
