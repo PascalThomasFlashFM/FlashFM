@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Voyance en direct — validation des inscriptions</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; max-width: 1000px; margin: 0 auto; padding: 24px 16px; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.1rem; margin-top: 2rem; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  th, td { border-bottom: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 0.9rem; vertical-align: top; }
+  button { cursor: pointer; padding: 4px 10px; margin-right: 4px; }
+  .status-en_attente { color: #b8860b; }
+  .status-envoye { color: #2e7d32; }
+  .status-exclu { color: #999; }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin: 12px 0; }
+  dialog { max-width: 600px; }
+  .error { color: #c0392b; }
+  .muted { color: #888; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>La Voyance en direct — inscriptions</h1>
+
+<div class="toolbar">
+  <button id="btn-sync">Lancer une synchro maintenant</button>
+  <button id="btn-send-all">Envoyer tous les mails en attente</button>
+  <span id="toolbar-msg" class="muted"></span>
+</div>
+
+<h2>Inscriptions</h2>
+<table id="tbl-registrations">
+  <thead>
+    <tr><th>Date</th><th>Prénom</th><th>Nom</th><th>Email</th><th>Statut</th><th>Actions</th></tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<h2>Historique</h2>
+<div id="history"></div>
+
+<dialog id="preview-dialog">
+  <h3 id="preview-subject"></h3>
+  <p class="muted" id="preview-to"></p>
+  <div id="preview-body" style="border:1px solid #ccc; padding:12px; margin:12px 0;"></div>
+  <button id="preview-close">Fermer</button>
+</dialog>
+
+<script>
+async function api(path, options) {
+  const res = await fetch('/api' + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, options));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function statusLabel(s) {
+  return { en_attente: 'En attente', envoye: 'Envoyé', exclu: 'Exclu' }[s] || s;
+}
+
+async function loadRegistrations() {
+  const regs = await api('/registrations');
+  const tbody = document.querySelector('#tbl-registrations tbody');
+  tbody.innerHTML = '';
+  for (const r of regs) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${new Date(r.submission_date).toLocaleDateString('fr-FR')}</td>
+      <td>${r.prenom}</td>
+      <td>${r.nom}</td>
+      <td>${r.email}</td>
+      <td class="status-${r.mail_status}">${statusLabel(r.mail_status)}${r.exclusion_reason ? ' — ' + r.exclusion_reason : ''}</td>
+      <td></td>
+    `;
+    const actionsTd = tr.querySelector('td:last-child');
+
+    const previewBtn = document.createElement('button');
+    previewBtn.textContent = 'Aperçu mail';
+    previewBtn.onclick = () => showPreview(r);
+    actionsTd.appendChild(previewBtn);
+
+    if (r.mail_status === 'en_attente') {
+      const sendBtn = document.createElement('button');
+      sendBtn.textContent = 'Envoyer';
+      sendBtn.onclick = () => sendOne(r.bocir_id);
+      actionsTd.appendChild(sendBtn);
+
+      const excludeBtn = document.createElement('button');
+      excludeBtn.textContent = 'Exclure';
+      excludeBtn.onclick = () => excludeOne(r.bocir_id);
+      actionsTd.appendChild(excludeBtn);
+    }
+
+    tbody.appendChild(tr);
+  }
+}
+
+function showPreview(r) {
+  document.getElementById('preview-subject').textContent = r.mail_preview.subject;
+  document.getElementById('preview-to').textContent = 'À : ' + r.mail_preview.to;
+  document.getElementById('preview-body').innerHTML = r.mail_preview.html;
+  document.getElementById('preview-dialog').showModal();
+}
+
+async function sendOne(id) {
+  try {
+    await api(`/registrations/${id}/send`, { method: 'POST' });
+    await loadAll();
+  } catch (e) {
+    alert('Echec envoi : ' + e.message);
+  }
+}
+
+async function excludeOne(id) {
+  const reason = prompt('Raison de l\'exclusion (optionnel) :') || null;
+  try {
+    await api(`/registrations/${id}/exclude`, { method: 'POST', body: JSON.stringify({ reason }) });
+    await loadAll();
+  } catch (e) {
+    alert('Echec exclusion : ' + e.message);
+  }
+}
+
+async function loadHistory() {
+  const h = await api('/history');
+  const el = document.getElementById('history');
+  const runsRows = h.runs.map(r => `<tr><td>${r.started_at}</td><td>${r.status}</td><td>${r.nb_processed}</td><td>${r.nb_errors}</td><td>${r.error_detail || ''}</td></tr>`).join('');
+  const sentRows = h.envoyes.map(r => `<tr><td>${r.mail_sent_at}</td><td>${r.prenom} ${r.nom}</td><td>${r.email}</td></tr>`).join('');
+  const excludedRows = h.exclus.map(r => `<tr><td>${r.prenom} ${r.nom}</td><td>${r.exclusion_reason || ''}</td></tr>`).join('');
+  el.innerHTML = `
+    <h3>Mails envoyés</h3>
+    <table><thead><tr><th>Date</th><th>Nom</th><th>Email</th></tr></thead><tbody>${sentRows}</tbody></table>
+    <h3>Exclusions</h3>
+    <table><thead><tr><th>Nom</th><th>Raison</th></tr></thead><tbody>${excludedRows}</tbody></table>
+    <h3>Executions de synchro</h3>
+    <table><thead><tr><th>Date</th><th>Statut</th><th>Traitées</th><th>Erreurs</th><th>Détail</th></tr></thead><tbody>${runsRows}</tbody></table>
+  `;
+}
+
+async function loadAll() {
+  await loadRegistrations();
+  await loadHistory();
+}
+
+document.getElementById('preview-close').onclick = () => document.getElementById('preview-dialog').close();
+
+document.getElementById('btn-sync').onclick = async () => {
+  const msg = document.getElementById('toolbar-msg');
+  msg.textContent = 'Synchro en cours...';
+  try {
+    const summary = await api('/sync', { method: 'POST' });
+    msg.textContent = summary.message;
+  } catch (e) {
+    msg.textContent = '';
+    alert('Echec synchro : ' + e.message);
+  }
+  await loadAll();
+};
+
+document.getElementById('btn-send-all').onclick = async () => {
+  if (!confirm('Envoyer tous les mails en attente ?')) return;
+  const result = await api('/send-all', { method: 'POST' });
+  if (result.failed.length > 0) {
+    alert(`${result.sent.length} envoyé(s), ${result.failed.length} échec(s). Voir logs.`);
+  }
+  await loadAll();
+};
+
+loadAll();
+</script>
+</body>
+</html>
