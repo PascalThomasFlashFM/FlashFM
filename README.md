@@ -96,21 +96,55 @@ node dist/cli.js serve
 # -> http://localhost:3000 (port configurable via WEB_PORT)
 ```
 
-## 7. Configurer le cron
+## 7. Planifier l'exécution quotidienne
 
 Une exécution quotidienne suffit (le formulaire ne reçoit pas des centaines
-d'inscriptions par jour). Exemple, tous les jours à 8h :
+d'inscriptions par jour). Le script appelé ne fait toujours que `sync` : il ne
+déclenche jamais d'envoi de mail. La validation et l'envoi restent une action
+manuelle, via `node dist/cli.js send`/`send-all` ou l'interface web.
+
+### Linux / macOS (cron)
+
+Exemple, tous les jours à 8h :
 
 ```cron
 0 8 * * * /chemin/vers/flashfm-voyance/scripts/cron-sync.sh
 ```
 
-Le script `scripts/cron-sync.sh` appelle uniquement `sync` : il ne déclenche
-jamais d'envoi de mail. La validation et l'envoi restent une action manuelle,
-via `node dist/cli.js send`/`send-all` ou l'interface web.
-
 Si tu veux garder l'interface web disponible en permanence (par ex. sur un VPS),
 lance `node dist/cli.js serve` comme service systemd/pm2 séparé du cron.
+
+### Windows (Planificateur de tâches)
+
+1. Vérifie que Node.js est installé et dans le PATH (ouvre PowerShell, tape
+   `node -v` : une version doit s'afficher).
+2. Ouvre le **Planificateur de tâches** (touche Windows, tape "Planificateur
+   de tâches", ou `taskschd.msc`).
+3. *Créer une tâche de base...* :
+   - Nom : `Synchro Voyance BOCIR`.
+   - Déclencheur : **Tous les jours**, choisis une heure (ex. 8h00).
+   - Action : **Démarrer un programme**.
+     - Programme/script : chemin complet vers `scripts\cron-sync.bat`
+       (ex. `C:\FlashFM\voyance\scripts\cron-sync.bat`).
+     - Laisse "Démarrer dans" vide : le script se positionne lui-même dans le
+       bon dossier.
+4. Une fois la tâche créée, clic droit dessus > **Propriétés** :
+   - Coche **Exécuter même si l'utilisateur n'est pas connecté** si tu veux
+     que ça tourne même PC verrouillé (il faudra saisir le mot de passe du
+     compte Windows une fois).
+   - Onglet **Conditions** : décoche "Ne démarrer la tâche que si l'ordinateur
+     est branché sur secteur" si c'est un PC fixe sans batterie.
+5. Dans les **Options d'alimentation** Windows (Panneau de
+   configuration > Options d'alimentation), passe le mode veille sur
+   **Jamais** pour cette machine — sinon la tâche planifiée ne se déclenchera
+   pas si le PC est en veille à l'heure prévue.
+6. Teste : clic droit sur la tâche > **Exécuter**, puis vérifie
+   `data\cron.log` et le Sheet.
+
+Pour garder l'interface web accessible en permanence sur ce PC, lance
+`node dist\cli.js serve` dans une fenêtre PowerShell que tu laisses ouverte,
+ou crée une seconde tâche planifiée au démarrage de la session qui lance cette
+commande.
 
 ## 8. Données et logs
 
