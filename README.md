@@ -14,7 +14,8 @@ d'interface distante.
 
 ## Stack
 
-Node.js + TypeScript, SQLite (`better-sqlite3`) pour l'état de synchro,
+Node.js + TypeScript, SQLite intégré à Node (`node:sqlite`, aucune compilation
+native requise) pour l'état de synchro,
 `googleapis` pour Sheets, `nodemailer` pour l'envoi SMTP, `express` pour
 l'interface de validation.
 
@@ -27,7 +28,9 @@ cp .env.example .env
 ```
 
 Remplis ensuite `.env` (voir sections suivantes pour où trouver chaque valeur).
-Node 18+ requis (utilise le `fetch` natif).
+Node 22.5+ requis (utilise le `fetch` natif et le module SQLite intégré
+`node:sqlite` — pas de compilation native, donc pas besoin d'installer Python
+ni Visual Studio Build Tools).
 
 ## 2. Créer le compte de service Google
 

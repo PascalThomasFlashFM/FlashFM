@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -65,18 +65,18 @@ export interface SyncRun {
   error_detail: string | null;
 }
 
-let db: Database.Database | null = null;
+let db: DatabaseSync | null = null;
 
-export function openDb(dbPath: string): Database.Database {
+export function openDb(dbPath: string): DatabaseSync {
   if (db) return db;
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
+  db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA journal_mode = WAL");
   db.exec(SCHEMA);
   return db;
 }
 
-function requireDb(): Database.Database {
+function requireDb(): DatabaseSync {
   if (!db) throw new Error("Base de donnees non initialisee : appelle openDb() d'abord.");
   return db;
 }
@@ -135,11 +135,11 @@ export function listRegistrations(status?: MailStatus): Registration[] {
   if (status) {
     return requireDb()
       .prepare("SELECT * FROM registrations WHERE mail_status = ? ORDER BY submission_date DESC")
-      .all(status) as Registration[];
+      .all(status) as unknown as Registration[];
   }
   return requireDb()
     .prepare("SELECT * FROM registrations ORDER BY submission_date DESC")
-    .all() as Registration[];
+    .all() as unknown as Registration[];
 }
 
 export function markExcluded(bocirId: string, reason: string | null): void {
@@ -189,5 +189,5 @@ export function finishSyncRun(
 export function listSyncRuns(limit = 30): SyncRun[] {
   return requireDb()
     .prepare("SELECT * FROM sync_runs ORDER BY id DESC LIMIT ?")
-    .all(limit) as SyncRun[];
+    .all(limit) as unknown as SyncRun[];
 }

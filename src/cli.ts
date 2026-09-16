@@ -5,6 +5,15 @@ import { initLogger, logger } from "./logger";
 import { runSync } from "./sync/runSync";
 import { startWebServer } from "./web/server";
 
+// node:sqlite est experimental mais stable pour notre usage (lecture/ecriture
+// locale, un seul processus a la fois) : on masque juste le warning cosmetique
+// pour ne pas alarmer inutilement lors des executions cron.
+process.removeAllListeners("warning");
+process.on("warning", (warning) => {
+  if (warning.name === "ExperimentalWarning" && /SQLite/i.test(warning.message)) return;
+  console.warn(`(node:${process.pid}) ${warning.name}: ${warning.message}`);
+});
+
 function printUsage(): void {
   console.log(`Usage :
   node dist/cli.js sync            Synchronise BOCIR -> Google Sheet (jamais d'envoi de mail)
