@@ -474,6 +474,96 @@ def export_to_sheets(creds_path, tab_name, winners, game_info):
             f"{SPREADSHEET_ID}/edit#gid={sid}")
 
 
+def export_to_sheets_match(creds_path, tab_name, winners, game_info):
+    """
+    Ajoute un tableau de gagnants dans un onglet existant (variante Match).
+    - Si l'onglet est vide (1er match de la saison), commence en ligne 3
+      (ligne 1 = titre de l'onglet laissé libre, ligne 2 = vide).
+    - Sinon, détecte la dernière ligne non-vide et insère une ligne vide
+      de séparation avant le nouveau tableau.
+    """
+    sh = _sheets_client(creds_path)
+    ws = sh.worksheet(tab_name)
+    sid = ws.id
+
+    all_vals = ws.get_all_values()
+    # Trouver la dernière ligne non vide
+    last_row = 0
+    for i, row in enumerate(all_vals):
+        if any(c.strip() for c in row):
+            last_row = i + 1  # 1-indexed
+
+    if last_row == 0:
+        # Onglet vide : on commence en ligne 3 (A3)
+        start_row = 3
+    else:
+        # On laisse une ligne vide de séparation
+        start_row = last_row + 2
+
+    title  = (f"{game_info['nom_jeu']}  –  "
+              f"{game_info['date']}  –  {game_info['lieu']}")
+    header = ["Nom", "Prénom", "Ville", "Email", "Téléphone"]
+    data   = [
+        [w['nom'], w['prenom'], w.get('ville', ''),
+         w['email'], format_phone(w['phone'])]
+        for w in winners
+    ]
+
+    # Étendre la feuille si nécessaire
+    needed = start_row + 1 + len(data)
+    if ws.row_count < needed:
+        ws.add_rows(needed - ws.row_count + 5)
+
+    cell_range = f"A{start_row}"
+    ws.update(cell_range, [[title, "", "", "", ""], header] + data,
+              value_input_option="USER_ENTERED")
+
+    title_row_idx  = start_row - 1   # 0-indexed pour batch_update
+    header_row_idx = start_row       # 0-indexed
+
+    sh.batch_update({"requests": [
+        # Dé-fusion préventive de la ligne titre
+        {"unmergeCells": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": title_row_idx,
+                      "endRowIndex": title_row_idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 26}}},
+        # Fusion titre
+        {"mergeCells": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": title_row_idx,
+                      "endRowIndex": title_row_idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
+            "mergeType": "MERGE_ALL"}},
+        # Style titre (rouge Flash FM)
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": title_row_idx,
+                      "endRowIndex": title_row_idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.75, "green": 0.05, "blue": 0.05},
+                "horizontalAlignment": "CENTER",
+                "textFormat": {"bold": True, "fontSize": 12,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
+            "fields": "userEnteredFormat(backgroundColor,horizontalAlignment,textFormat)"}},
+        # Style en-têtes (bleu marine)
+        {"repeatCell": {
+            "range": {"sheetId": sid,
+                      "startRowIndex": header_row_idx,
+                      "endRowIndex": header_row_idx + 1,
+                      "startColumnIndex": 0, "endColumnIndex": 5},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": {"red": 0.13, "green": 0.24, "blue": 0.49},
+                "textFormat": {"bold": True,
+                               "foregroundColor": {"red": 1, "green": 1, "blue": 1}}}},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)"}},
+    ]})
+
+    return (f"https://docs.google.com/spreadsheets/d/"
+            f"{SPREADSHEET_ID}/edit#gid={sid}")
+
+
 # ══════════════════════════════════════════════════════════
 #  Templates email
 # ══════════════════════════════════════════════════════════
@@ -1092,14 +1182,42 @@ class FlashFMApp(tk.Tk):
         f = self._section("Export Google Sheets", "④", color="#1A6B35")
 
         # Affichage du fichier credentials (sélectionné en étape ③)
-        row = tk.Frame(f, bg=C_WHITE)
-        row.pack(fill=tk.X)
-        tk.Label(row, text="Credentials :", bg=C_WHITE,
+        row0 = tk.Frame(f, bg=C_WHITE)
+        row0.pack(fill=tk.X)
+        tk.Label(row0, text="Credentials :", bg=C_WHITE,
                  font=("", 10)).pack(side=tk.LEFT)
-        self.lbl_creds4 = tk.Label(row,
+        self.lbl_creds4 = tk.Label(row0,
             text="(sélectionner en étape ③)",
             bg=C_WHITE, fg=C_GRAY, font=("", 10, "italic"))
         self.lbl_creds4.pack(side=tk.LEFT, padx=8)
+
+        # Choix Spectacle / Match
+        self._export_type = tk.StringVar(value="spectacle")
+        row1 = tk.Frame(f, bg=C_WHITE)
+        row1.pack(fill=tk.X, pady=(8, 0))
+        tk.Label(row1, text="Type :", bg=C_WHITE,
+                 font=("", 10)).pack(side=tk.LEFT)
+        tk.Radiobutton(row1, text="Spectacle (nouvel onglet)",
+                       variable=self._export_type, value="spectacle",
+                       bg=C_WHITE, font=("", 10),
+                       command=self._on_export_type_change).pack(side=tk.LEFT, padx=(6, 16))
+        tk.Radiobutton(row1, text="Match (onglet existant)",
+                       variable=self._export_type, value="match",
+                       bg=C_WHITE, font=("", 10),
+                       command=self._on_export_type_change).pack(side=tk.LEFT)
+
+        # Frame visible uniquement pour "Match" : sélection de l'onglet
+        self._match_frame = tk.Frame(f, bg=C_WHITE)
+        tk.Label(self._match_frame, text="Onglet destination :",
+                 bg=C_WHITE, font=("", 10)).pack(side=tk.LEFT)
+        self._match_tab_var = tk.StringVar()
+        self._match_tab_combo = ttk.Combobox(self._match_frame,
+                                              textvariable=self._match_tab_var,
+                                              state="readonly", width=30, font=("", 10))
+        self._match_tab_combo.pack(side=tk.LEFT, padx=6)
+        self._btn(self._match_frame, "🔄 Actualiser",
+                  self._load_sheet_tabs, color="#444",
+                  font_size=9).pack(side=tk.LEFT, padx=4)
 
         self._btn(f, "📊   EXPORTER VERS GOOGLE SHEETS",
                   self._do_sheets, color="#1A6B35",
@@ -1108,6 +1226,30 @@ class FlashFMApp(tk.Tk):
         self.lbl_sheets = tk.Label(f, text="", bg=C_WHITE,
                                     fg=C_GREEN, font=("", 10))
         self.lbl_sheets.pack(anchor="w")
+
+    def _on_export_type_change(self):
+        if self._export_type.get() == "match":
+            self._match_frame.pack(fill=tk.X, pady=(4, 0))
+            if not self._match_tab_combo['values']:
+                self._load_sheet_tabs()
+        else:
+            self._match_frame.pack_forget()
+
+    def _load_sheet_tabs(self):
+        if not self.creds_path.get():
+            messagebox.showwarning("Credentials manquants",
+                "Sélectionnez le fichier credentials Google (étape ③).")
+            return
+        if not GSPREAD_OK:
+            return
+        try:
+            sh   = _sheets_client(self.creds_path.get())
+            tabs = [ws.title for ws in sh.worksheets()]
+            self._match_tab_combo['values'] = tabs
+            if tabs and not self._match_tab_var.get():
+                self._match_tab_var.set(tabs[0])
+        except Exception as e:
+            messagebox.showerror("Erreur", f"Impossible de charger les onglets :\n{e}")
 
     def _do_sheets(self):
         if not self.winners:
@@ -1123,29 +1265,45 @@ class FlashFMApp(tk.Tk):
                 "pip install gspread google-auth")
             return
 
-        nom_jeu   = self.gv['nom_jeu'].get()
-        MOIS_FR   = ["janvier","février","mars","avril","mai","juin",
-                     "juillet","août","septembre","octobre","novembre","décembre"]
-        now       = datetime.now()
-        mois_an   = f"{MOIS_FR[now.month - 1]} {now.year}"
-        tab_name  = f"{nom_jeu[:45]} {mois_an}"
-        game_info = {k: v.get() for k, v in self.gv.items()}
+        game_info   = {k: v.get() for k, v in self.gv.items()}
+        export_type = self._export_type.get()
+
+        if export_type == "match":
+            tab_name = self._match_tab_var.get()
+            if not tab_name:
+                messagebox.showwarning("Onglet manquant",
+                    "Sélectionnez l'onglet de destination pour le match.")
+                return
+            msg_ok = f"✓  Tableau ajouté dans l'onglet « {tab_name} »"
+            msg_log = f"Google Sheets : tableau ajouté dans « {tab_name} »"
+        else:
+            nom_jeu  = self.gv['nom_jeu'].get()
+            MOIS_FR  = ["janvier","février","mars","avril","mai","juin",
+                        "juillet","août","septembre","octobre","novembre","décembre"]
+            now      = datetime.now()
+            mois_an  = f"{MOIS_FR[now.month - 1]} {now.year}"
+            tab_name = f"{nom_jeu[:45]} {mois_an}"
+            msg_ok   = f"✓  Onglet « {tab_name} » créé"
+            msg_log  = f"Google Sheets : onglet « {tab_name} » créé"
 
         self.lbl_sheets.config(text="⏳  Export en cours…", fg=C_GRAY)
         self.update()
 
         def run():
             try:
-                url = export_to_sheets(self.creds_path.get(), tab_name,
-                                       self.winners, game_info)
-                self.after(0, lambda: self.lbl_sheets.config(
-                    text=f"✓  Onglet « {tab_name} » créé", fg=C_GREEN))
-                self.after(0, lambda: self._log(
-                    f"Google Sheets : onglet « {tab_name} » → {url}"))
+                if export_type == "match":
+                    url = export_to_sheets_match(self.creds_path.get(), tab_name,
+                                                 self.winners, game_info)
+                else:
+                    url = export_to_sheets(self.creds_path.get(), tab_name,
+                                           self.winners, game_info)
+                self.after(0, lambda: self.lbl_sheets.config(text=msg_ok, fg=C_GREEN))
+                self.after(0, lambda: self._log(f"{msg_log} → {url}"))
             except Exception as e:
+                err = str(e)
                 self.after(0, lambda: self.lbl_sheets.config(
-                    text=f"✗  Erreur : {e}", fg=C_RED))
-                self.after(0, lambda: self._log(f"Erreur Sheets : {e}"))
+                    text=f"✗  Erreur : {err}", fg=C_RED))
+                self.after(0, lambda: self._log(f"Erreur Sheets : {err}"))
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -1239,49 +1397,40 @@ class FlashFMApp(tk.Tk):
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.")
             return
 
-        # Prépare la liste des mails à envoyer (un par gagnant, ou un seul test)
+        # Un seul mail de test : utilise le 1er gagnant si disponible,
+        # sinon les valeurs par défaut
         if self.winners:
-            items = [(self._variables(prenom=w['prenom'], nom=w['nom']), w)
-                     for w in self.winners]
+            w = self.winners[0]
+            v = self._variables(prenom=w['prenom'], nom=w['nom'])
         else:
-            items = [(self._variables(), None)]
+            w = None
+            v = self._variables()
 
-        self.lbl_send.config(
-            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
+        self.lbl_send.config(text="⏳  Envoi du mail de test…", fg=C_GRAY)
         self.update()
 
         def run():
-            ok_count, errs = 0, []
-            for v, w in items:
-                subject = apply_vars(tpl['subject'], v)
-                html    = apply_vars(tpl['html'],    v)
-                plain   = apply_vars(tpl['plain'],   v)
-                # Sujet préfixé pour distinguer les mails de test
-                subject = f"[TEST] {subject}"
-                try:
-                    send_smtp(TEST_EMAIL, subject, html, plain)
-                    ok_count += 1
-                    name = f"{w['prenom']} {w['nom']}" if w else "test"
-                    self.after(0, lambda n=name: self._log(
-                        f"✓  Test ({n}) → {TEST_EMAIL}"))
-                except Exception as e:
-                    errs.append(str(e))
-                    self.after(0, lambda err=str(e): self._log(
-                        f"✗  Erreur SMTP : {err}"))
-
-            def finish():
-                if not errs:
+            subject = f"[TEST] {apply_vars(tpl['subject'], v)}"
+            html    = apply_vars(tpl['html'],  v)
+            plain   = apply_vars(tpl['plain'], v)
+            name    = f"{w['prenom']} {w['nom']}" if w else "test"
+            try:
+                send_smtp(TEST_EMAIL, subject, html, plain)
+                self.after(0, lambda: self._log(
+                    f"✓  Test ({name}) → {TEST_EMAIL}"))
+                def finish_ok():
                     self.lbl_send.config(
-                        text=f"✓  {ok_count} mail(s) de test envoyé(s) à {TEST_EMAIL}",
-                        fg=C_GREEN)
-                    messagebox.showinfo("Tests envoyés",
-                        f"{ok_count} mail(s) envoyé(s) à {TEST_EMAIL}\n"
-                        f"(sujet préfixé [TEST])")
-                else:
-                    self.lbl_send.config(
-                        text=f"✗  Erreur SMTP : {errs[0]}", fg=C_RED)
-                    messagebox.showerror("Erreur SMTP", errs[0])
-            self.after(0, finish)
+                        text=f"✓  Mail de test envoyé à {TEST_EMAIL}", fg=C_GREEN)
+                    messagebox.showinfo("Test envoyé",
+                        f"Mail de test envoyé à {TEST_EMAIL}\n(sujet préfixé [TEST])")
+                self.after(0, finish_ok)
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: self._log(f"✗  Erreur SMTP : {err}"))
+                def finish_err():
+                    self.lbl_send.config(text=f"✗  Erreur SMTP : {err}", fg=C_RED)
+                    messagebox.showerror("Erreur SMTP", err)
+                self.after(0, finish_err)
 
         threading.Thread(target=run, daemon=True).start()
 
