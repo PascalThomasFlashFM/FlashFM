@@ -26,6 +26,7 @@ except ImportError:
 BASE_DIR              = os.path.dirname(os.path.abspath(__file__))
 TEMPLATES_PATH        = os.path.join(BASE_DIR, "flashfm_templates.json")
 CLUBS_PATH            = os.path.join(BASE_DIR, "flashfm_clubs.json")
+CLUB_CONTACTS_PATH    = os.path.join(BASE_DIR, "flashfm_club_contacts.json")
 SPECTACLE_CONFIG_PATH = os.path.join(BASE_DIR, "flashfm_spectacle.json")
 EVENTS_PATH           = os.path.join(BASE_DIR, "flashfm_events.json")
 
@@ -672,6 +673,106 @@ def apply_vars(text, variables):
     return text
 
 
+def load_club_contacts():
+    if os.path.exists(CLUB_CONTACTS_PATH):
+        with open(CLUB_CONTACTS_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+
+def save_club_contacts(contacts):
+    with open(CLUB_CONTACTS_PATH, 'w', encoding='utf-8') as f:
+        json.dump(contacts, f, ensure_ascii=False, indent=2)
+
+
+# Signature plain text de Pascal
+SIGNATURE_PLAIN = (
+    "Pascal Thomas\n"
+    "FLASH FM – Gérant SARL PROXIMEDIA\n"
+    "30-32 Cours Gay Lussac – 87000 LIMOGES\n"
+    "05 55 31 00 00\n"
+    "pascal@flashfm.fr | http://www.flashfm.fr\n\n"
+    "FLASH FM 1ère radio musicale à LIMOGES et en HAUTE-VIENNE\n"
+    "Limoges : 89.9 – Saint-Junien : 98.4 – Brive : 99.9 – Uzerche : 99.9 "
+    "– Guéret : 97.7 – Montmorillon : 95\n"
+    "DAB + : Haute-Vienne – Corrèze – Vienne"
+)
+
+SIGNATURE_HTML = (
+    "<p><strong><em><span style='font-size:14pt;color:#1F497D;'>Pascal "
+    "Thomas</span></em></strong><br>"
+    "<strong><em><span style='font-size:14pt;color:#1F497D;'>FLASH "
+    "FM</span></em></strong><br>"
+    "<em><span style='font-size:8pt;color:#7030A0;'>Gérant SARL "
+    "PROXIMEDIA</span></em><br>"
+    "<em><span style='color:#17365D;'>Directeur</span></em><br>"
+    "<span style='color:#1F497D;'>30-32 Cours Gay Lussac</span><br>"
+    "<span style='color:#1F497D;'>87000 LIMOGES</span><br>"
+    "<span style='color:#4A442A;'>05 55 31 00 00</span></p>"
+    "<p><a href='mailto:pascal@flashfm.fr' style='color:purple;'>"
+    "pascal@flashfm.fr</a>&nbsp;|&nbsp;"
+    "<a href='http://www.flashfm.fr' style='color:purple;'>"
+    "http://www.flashfm.fr</a></p><br>"
+    "<p><em><span style='color:#1F497D;'>FLASH FM 1<sup>ère</sup> radio musicale "
+    "à LIMOGES et en HAUTE-VIENNE</span></em><br>"
+    "Limoges&nbsp;: 89.9 – Saint-Junien&nbsp;: 98.4 – Brive&nbsp;: 99.9 – "
+    "Uzerche&nbsp;: 99.9 – Guéret&nbsp;: 97.7 – Montmorillon&nbsp;: 95<br>"
+    "DAB +&nbsp;: Haute-Vienne – Corrèze – Vienne – Et sur notre application "
+    "Flash FM France</p>"
+)
+
+
+def build_club_email(contact_prenom, nom_jeu, winners):
+    """Construit le mail destiné au responsable de club."""
+    # Liste des gagnants en texte brut
+    winners_plain = "\n".join(
+        f"  • {w['prenom']} {w['nom']}" for w in winners
+    ) if winners else "  (aucun gagnant)"
+
+    # Liste des gagnants en HTML (tableau simple)
+    rows_html = "".join(
+        f"<tr><td style='padding:4px 12px;'>{w['prenom']}</td>"
+        f"<td style='padding:4px 12px;'>{w['nom']}</td></tr>"
+        for w in winners
+    ) if winners else "<tr><td colspan='2'>(aucun gagnant)</td></tr>"
+    winners_html = (
+        "<table border='1' cellspacing='0' cellpadding='0' "
+        "style='border-collapse:collapse;font-family:Calibri,sans-serif;'>"
+        "<thead><tr>"
+        "<th style='padding:5px 12px;background:#1A4B8C;color:white;'>Prénom</th>"
+        "<th style='padding:5px 12px;background:#1A4B8C;color:white;'>Nom</th>"
+        "</tr></thead><tbody>"
+        + rows_html +
+        "</tbody></table>"
+    )
+
+    plain = (
+        f"Bonjour {contact_prenom},\n\n"
+        f"Voici la liste des gagnants pour le match : {nom_jeu}\n"
+        f"Chacun remporte 2 places\n\n"
+        f"{winners_plain}\n\n"
+        f"Merci pour ta confirmation de bonne réception.\n"
+        f"Bonne journée et bon match !\n\n"
+        f"{SIGNATURE_PLAIN}"
+    )
+
+    html = (
+        "<html><body style='font-family:Calibri,sans-serif;font-size:12pt;'>"
+        f"<p>Bonjour <strong>{contact_prenom}</strong>,</p>"
+        f"<p>Voici la liste des gagnants pour le match : "
+        f"<strong>{nom_jeu}</strong><br>"
+        f"Chacun remporte 2 places</p>"
+        f"{winners_html}<br>"
+        f"<p>Merci pour ta confirmation de bonne réception.<br>"
+        f"Bonne journée et bon match&nbsp;!</p><br>"
+        f"{SIGNATURE_HTML}"
+        "</body></html>"
+    )
+
+    subject = f"Flash FM – Liste des gagnants – {nom_jeu}"
+    return subject, html, plain
+
+
 # ══════════════════════════════════════════════════════════
 #  Envoi email
 # ══════════════════════════════════════════════════════════
@@ -844,10 +945,11 @@ class FlashFMApp(tk.Tk):
         self.minsize(700, 800)
         self.configure(bg=C_LIGHT)
 
-        self.templates    = load_templates()
-        self.participants = []
-        self.winners      = []
-        self.creds_path   = tk.StringVar(
+        self.templates      = load_templates()
+        self.club_contacts  = load_club_contacts()
+        self.participants   = []
+        self.winners        = []
+        self.creds_path     = tk.StringVar(
             value=find_credentials_file() or '')
 
         self._build_header()
@@ -926,6 +1028,7 @@ class FlashFMApp(tk.Tk):
         self._build_step4()
         self._build_step5()
         self._build_step6()
+        self._build_step7()
         self._build_log()
 
     # ① Paramètres du jeu
@@ -1215,6 +1318,8 @@ class FlashFMApp(tk.Tk):
                                               textvariable=self._match_tab_var,
                                               state="readonly", width=30, font=("", 10))
         self._match_tab_combo.pack(side=tk.LEFT, padx=6)
+        self._match_tab_combo.bind("<<ComboboxSelected>>",
+            lambda e: self._on_match_tab_changed(self._match_tab_var.get()))
         self._btn(self._match_frame, "🔄 Actualiser",
                   self._load_sheet_tabs, color="#444",
                   font_size=9).pack(side=tk.LEFT, padx=4)
@@ -1248,6 +1353,7 @@ class FlashFMApp(tk.Tk):
             self._match_tab_combo['values'] = tabs
             if tabs and not self._match_tab_var.get():
                 self._match_tab_var.set(tabs[0])
+                self._on_match_tab_changed(tabs[0])
         except Exception as e:
             messagebox.showerror("Erreur", f"Impossible de charger les onglets :\n{e}")
 
@@ -1482,6 +1588,149 @@ class FlashFMApp(tk.Tk):
             self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
             self.after(0, lambda: self._log(
                 f"Envoi : {ok} OK, {len(errs)} erreur(s)"))
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ⑦ Mail au responsable du club (visible uniquement en mode Match)
+    def _build_step7(self):
+        C_MATCH = "#8B4513"  # brun/marron pour distinguer cette section
+        f = self._section("Mail au responsable du club", "⑦", color=C_MATCH)
+
+        tk.Label(f,
+                 text="Uniquement pour les matchs. Configurez ici le contact du club "
+                      "sélectionné en étape ④ et envoyez-lui la liste des gagnants.",
+                 bg=C_WHITE, fg="#666", font=("", 9),
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 8))
+
+        # ── Champs contact ───────────────────────────────────────────────────
+        grid = tk.Frame(f, bg=C_WHITE)
+        grid.pack(fill=tk.X)
+
+        tk.Label(grid, text="Prénom du contact :", bg=C_WHITE,
+                 font=("", 10)).grid(row=0, column=0, sticky="w", pady=3)
+        self._club_contact_prenom = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_contact_prenom,
+                 width=28, font=("", 10)).grid(row=0, column=1, sticky="w", padx=8)
+
+        tk.Label(grid, text="Email du contact :", bg=C_WHITE,
+                 font=("", 10)).grid(row=1, column=0, sticky="w", pady=3)
+        self._club_contact_email = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_contact_email,
+                 width=36, font=("", 10)).grid(row=1, column=1, sticky="w", padx=8)
+
+        # Bouton mémoriser
+        self._btn(grid, "💾  Mémoriser pour ce club",
+                  self._save_club_contact, color="#555",
+                  font_size=9).grid(row=0, column=2, rowspan=2, padx=(12, 0))
+
+        # ── Boutons envoi ────────────────────────────────────────────────────
+        row_btns = tk.Frame(f, bg=C_WHITE)
+        row_btns.pack(fill=tk.X, pady=(10, 0))
+        self._btn(row_btns, f"📧   Test → {TEST_EMAIL}",
+                  self._send_club_test, color=C_BLUE,
+                  font_size=11).pack(side=tk.LEFT, padx=(0, 12))
+        self._btn(row_btns, "🚀   Envoyer au responsable",
+                  self._send_club_real, color=C_MATCH,
+                  font_size=11).pack(side=tk.LEFT)
+
+        self.lbl_club_send = tk.Label(f, text="", bg=C_WHITE,
+                                       fg=C_GREEN, font=("", 10))
+        self.lbl_club_send.pack(anchor="w", pady=(8, 0))
+
+    def _on_match_tab_changed(self, tab_name):
+        """Appelé quand l'onglet match change en ④ : charge le contact mémorisé."""
+        contact = self.club_contacts.get(tab_name, {})
+        self._club_contact_prenom.set(contact.get('prenom', ''))
+        self._club_contact_email.set(contact.get('email', ''))
+
+    def _save_club_contact(self):
+        tab = self._match_tab_var.get()
+        if not tab:
+            messagebox.showwarning("Onglet manquant",
+                "Sélectionnez d'abord l'onglet match en étape ④.")
+            return
+        self.club_contacts[tab] = {
+            'prenom': self._club_contact_prenom.get().strip(),
+            'email':  self._club_contact_email.get().strip(),
+        }
+        save_club_contacts(self.club_contacts)
+        self._log(f"Contact mémorisé pour « {tab} » : "
+                  f"{self.club_contacts[tab]['prenom']} "
+                  f"<{self.club_contacts[tab]['email']}>")
+        messagebox.showinfo("Mémorisé",
+            f"Contact enregistré pour l'onglet « {tab} ».")
+
+    def _get_club_email_data(self):
+        prenom  = self._club_contact_prenom.get().strip()
+        email   = self._club_contact_email.get().strip()
+        nom_jeu = self.gv['nom_jeu'].get().strip()
+        return prenom, email, nom_jeu
+
+    def _send_club_test(self):
+        prenom, _email, nom_jeu = self._get_club_email_data()
+        if not prenom:
+            messagebox.showwarning("Contact incomplet",
+                "Saisissez le prénom du contact.")
+            return
+        subject, html, plain = build_club_email(prenom, nom_jeu, self.winners)
+        subject = f"[TEST] {subject}"
+        self.lbl_club_send.config(text="⏳  Envoi du mail de test…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                send_smtp(TEST_EMAIL, subject, html, plain)
+                self.after(0, lambda: self._log(
+                    f"✓  Test mail club → {TEST_EMAIL}"))
+                def ok():
+                    self.lbl_club_send.config(
+                        text=f"✓  Mail de test envoyé à {TEST_EMAIL}", fg=C_GREEN)
+                    messagebox.showinfo("Test envoyé",
+                        f"Mail de test envoyé à {TEST_EMAIL}\n(sujet préfixé [TEST])")
+                self.after(0, ok)
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: self._log(f"✗  Erreur SMTP club : {err}"))
+                def ko():
+                    self.lbl_club_send.config(
+                        text=f"✗  Erreur SMTP : {err}", fg=C_RED)
+                    messagebox.showerror("Erreur SMTP", err)
+                self.after(0, ko)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _send_club_real(self):
+        prenom, email, nom_jeu = self._get_club_email_data()
+        if not prenom or not email:
+            messagebox.showwarning("Contact incomplet",
+                "Saisissez le prénom et l'email du contact.")
+            return
+        if not messagebox.askyesno("Confirmation",
+                f"Envoyer la liste des gagnants à :\n{prenom} <{email}> ?"):
+            return
+        subject, html, plain = build_club_email(prenom, nom_jeu, self.winners)
+        self.lbl_club_send.config(text="⏳  Envoi en cours…", fg=C_GRAY)
+        self.update()
+
+        def run():
+            try:
+                send_smtp(email, subject, html, plain)
+                self.after(0, lambda: self._log(
+                    f"✓  Mail club envoyé → {email}"))
+                def ok():
+                    self.lbl_club_send.config(
+                        text=f"✓  Mail envoyé à {email}", fg=C_GREEN)
+                    messagebox.showinfo("Envoyé",
+                        f"Mail envoyé à {prenom} <{email}>")
+                self.after(0, ok)
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: self._log(f"✗  Erreur SMTP club : {err}"))
+                def ko():
+                    self.lbl_club_send.config(
+                        text=f"✗  Erreur SMTP : {err}", fg=C_RED)
+                    messagebox.showerror("Erreur SMTP", err)
+                self.after(0, ko)
 
         threading.Thread(target=run, daemon=True).start()
 
