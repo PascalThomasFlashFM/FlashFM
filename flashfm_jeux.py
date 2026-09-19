@@ -266,12 +266,14 @@ def _find_col(header_row, keywords):
 
 
 def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
-                                  col_inserted):
+                                  col_inserted, bypass_6months=False):
     """
     Vérifie l'éligibilité ET enregistre le gagnant dans 'liste des gagnants'.
     Retourne (valide: bool, raison: str).
 
-    col_inserted : liste à un élément [bool] partagée entre les appels.
+    col_inserted   : liste à un élément [bool] partagée entre les appels.
+    bypass_6months : si True, la restriction 6 mois est ignorée (le gagnant
+                     est quand même enregistré dans l'historique).
     La colonne F n'est insérée qu'une seule fois (premier gagnant validé) ;
     les gagnants suivants réutilisent cette même colonne.
     """
@@ -333,7 +335,7 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
                 d = parse_date(row[i])
                 if d and d > six_months_ago:
                     recent.append(d)
-        if recent:
+        if recent and not bypass_6months:
             last = max(recent).strftime('%d/%m/%Y')
             return False, f"A gagné le {last} (moins de 6 mois)"
         last_all = []
@@ -363,10 +365,12 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
 
 
 def draw_with_checks(participants, n, creds_path, nom_jeu,
-                     log_cb, done_cb, error_cb):
+                     log_cb, done_cb, error_cb,
+                     bypass_6months=False):
     """
     Tirage au sort aléatoire avec vérification d'éligibilité et enregistrement.
     Exécuté dans un thread secondaire.
+    bypass_6months : si True, la restriction 6 mois est ignorée.
     """
     sh = _sheets_client(creds_path)
 
@@ -374,6 +378,8 @@ def draw_with_checks(participants, n, creds_path, nom_jeu,
     all_banned = banned_ws.get_all_values()
     banned_rows = [row for row in all_banned[1:] if any(c.strip() for c in row)]
     log_cb(f"Données chargées : {len(banned_rows)} joueur(s) banni(s).")
+    if bypass_6months:
+        log_cb("ℹ  Vérification 6 mois désactivée (mode bypass).")
 
     pool = [p for p in participants if p['email']]
     random.shuffle(pool)
@@ -386,7 +392,8 @@ def draw_with_checks(participants, n, creds_path, nom_jeu,
             break
         try:
             valid, reason = validate_and_register_winner(
-                candidate, nom_jeu, sh, banned_rows, col_inserted)
+                candidate, nom_jeu, sh, banned_rows, col_inserted,
+                bypass_6months=bypass_6months)
         except Exception as e:
             log_cb(f"⚠  Erreur {candidate['prenom']} {candidate['nom']} : {e}")
             continue
@@ -954,6 +961,7 @@ class FlashFMApp(tk.Tk):
         self.winners        = []
         self.creds_path     = tk.StringVar(
             value=find_credentials_file() or '')
+        self._bypass_6months = tk.BooleanVar(value=False)
         # Initialisés dans _build_step7 — déclarés ici pour que les méthodes
         # d'envoi puissent y accéder sans risque d'AttributeError
         self._club_cc_prenom = [tk.StringVar(), tk.StringVar()]
@@ -1170,7 +1178,18 @@ class FlashFMApp(tk.Tk):
                  text="ℹ  Le tirage vérifie automatiquement les joueurs bannis "
                       "et les gains récents (< 6 mois) via Google Sheets.",
                  bg=C_WHITE, fg="#666", font=("", 9),
-                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 6))
+
+        # Option bypass 6 mois
+        bypass_row = tk.Frame(f, bg=C_WHITE)
+        bypass_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Checkbutton(
+            bypass_row,
+            text="Ignorer la vérification 6 mois (participants peu nombreux)",
+            variable=self._bypass_6months,
+            bg=C_WHITE, font=("", 10),
+            activebackground=C_WHITE,
+        ).pack(side=tk.LEFT)
 
         # Bouton tirage
         self.btn_draw = self._btn(f, "🎲   LANCER LE TIRAGE",
@@ -1251,16 +1270,18 @@ class FlashFMApp(tk.Tk):
         self.update()
 
         nom_jeu = self.gv['nom_jeu'].get()
+        bypass  = self._bypass_6months.get()
 
         def run():
             try:
                 draw_with_checks(
                     filtered, n,
                     self.creds_path.get(), nom_jeu,
-                    log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
-                    done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
-                    error_cb = lambda m: self.after(0, lambda msg=m:
-                                   messagebox.showwarning("Tirage incomplet", msg))
+                    log_cb        = lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                    done_cb       = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
+                    error_cb      = lambda m: self.after(0, lambda msg=m:
+                                       messagebox.showwarning("Tirage incomplet", msg)),
+                    bypass_6months = bypass,
                 )
             except Exception as e:
                 self.after(0, lambda: self.lbl_draw.config(
