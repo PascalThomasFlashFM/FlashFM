@@ -777,17 +777,20 @@ def build_club_email(contact_prenom, nom_jeu, winners):
 #  Envoi email
 # ══════════════════════════════════════════════════════════
 
-def send_smtp(to_addr, subject, html_body, plain_body):
+def send_smtp(to_addr, subject, html_body, plain_body, cc_addrs=None):
+    """Envoie un email via SMTP SSL. cc_addrs : liste optionnelle d'adresses en copie."""
+    all_cc = [FROM_ADDR] + (cc_addrs or [])
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = f"{FROM_NAME} <{FROM_ADDR}>"
     msg["To"]      = to_addr
-    msg["Cc"]      = FROM_ADDR
+    msg["Cc"]      = ", ".join(all_cc)
     msg.attach(MIMEText(plain_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+    recipients = [to_addr] + all_cc
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as srv:
         srv.login(SMTP_LOGIN, SMTP_PASSWORD)
-        srv.sendmail(FROM_ADDR, [to_addr, FROM_ADDR], msg.as_string())
+        srv.sendmail(FROM_ADDR, recipients, msg.as_string())
 
 
 # ══════════════════════════════════════════════════════════
@@ -951,6 +954,10 @@ class FlashFMApp(tk.Tk):
         self.winners        = []
         self.creds_path     = tk.StringVar(
             value=find_credentials_file() or '')
+        # Initialisés dans _build_step7 — déclarés ici pour que les méthodes
+        # d'envoi puissent y accéder sans risque d'AttributeError
+        self._club_cc_prenom = [tk.StringVar(), tk.StringVar()]
+        self._club_cc_email  = [tk.StringVar(), tk.StringVar()]
 
         self._build_header()
         self._build_scroll_area()
@@ -1602,7 +1609,7 @@ class FlashFMApp(tk.Tk):
                  bg=C_WHITE, fg="#666", font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 8))
 
-        # ── Champs contact ───────────────────────────────────────────────────
+        # ── Champs contact principal ─────────────────────────────────────────
         grid = tk.Frame(f, bg=C_WHITE)
         grid.pack(fill=tk.X)
 
@@ -1618,10 +1625,33 @@ class FlashFMApp(tk.Tk):
         tk.Entry(grid, textvariable=self._club_contact_email,
                  width=36, font=("", 10)).grid(row=1, column=1, sticky="w", padx=8)
 
+        # Champs CC (2 personnes supplémentaires en copie)
+        tk.Label(grid, text="CC 1 – Prénom :", bg=C_WHITE,
+                 font=("", 10)).grid(row=2, column=0, sticky="w", pady=(6, 3))
+        self._club_cc_prenom[0] = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_cc_prenom[0],
+                 width=22, font=("", 10)).grid(row=2, column=1, sticky="w", padx=8)
+        tk.Label(grid, text="Email :", bg=C_WHITE,
+                 font=("", 10)).grid(row=2, column=2, sticky="w")
+        self._club_cc_email[0] = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_cc_email[0],
+                 width=30, font=("", 10)).grid(row=2, column=3, sticky="w", padx=8)
+
+        tk.Label(grid, text="CC 2 – Prénom :", bg=C_WHITE,
+                 font=("", 10)).grid(row=3, column=0, sticky="w", pady=3)
+        self._club_cc_prenom[1] = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_cc_prenom[1],
+                 width=22, font=("", 10)).grid(row=3, column=1, sticky="w", padx=8)
+        tk.Label(grid, text="Email :", bg=C_WHITE,
+                 font=("", 10)).grid(row=3, column=2, sticky="w")
+        self._club_cc_email[1] = tk.StringVar()
+        tk.Entry(grid, textvariable=self._club_cc_email[1],
+                 width=30, font=("", 10)).grid(row=3, column=3, sticky="w", padx=8)
+
         # Bouton mémoriser
         self._btn(grid, "💾  Mémoriser pour ce club",
                   self._save_club_contact, color="#555",
-                  font_size=9).grid(row=0, column=2, rowspan=2, padx=(12, 0))
+                  font_size=9).grid(row=0, column=4, rowspan=4, padx=(12, 0))
 
         # ── Boutons envoi ────────────────────────────────────────────────────
         row_btns = tk.Frame(f, bg=C_WHITE)
@@ -1642,6 +1672,13 @@ class FlashFMApp(tk.Tk):
         contact = self.club_contacts.get(tab_name, {})
         self._club_contact_prenom.set(contact.get('prenom', ''))
         self._club_contact_email.set(contact.get('email', ''))
+        cc = contact.get('cc', [{}, {}])
+        while len(cc) < 2:
+            cc.append({})
+        self._club_cc_prenom[0].set(cc[0].get('prenom', ''))
+        self._club_cc_email[0].set(cc[0].get('email', ''))
+        self._club_cc_prenom[1].set(cc[1].get('prenom', ''))
+        self._club_cc_email[1].set(cc[1].get('email', ''))
 
     def _save_club_contact(self):
         tab = self._match_tab_var.get()
@@ -1649,9 +1686,18 @@ class FlashFMApp(tk.Tk):
             messagebox.showwarning("Onglet manquant",
                 "Sélectionnez d'abord l'onglet match en étape ④.")
             return
+        cc_list = []
+        for i in range(2):
+            p = self._club_cc_prenom[i].get().strip()
+            e = self._club_cc_email[i].get().strip()
+            if p or e:
+                cc_list.append({'prenom': p, 'email': e})
+            else:
+                cc_list.append({})
         self.club_contacts[tab] = {
             'prenom': self._club_contact_prenom.get().strip(),
             'email':  self._club_contact_email.get().strip(),
+            'cc':     cc_list,
         }
         save_club_contacts(self.club_contacts)
         self._log(f"Contact mémorisé pour « {tab} » : "
@@ -1664,10 +1710,16 @@ class FlashFMApp(tk.Tk):
         prenom  = self._club_contact_prenom.get().strip()
         email   = self._club_contact_email.get().strip()
         nom_jeu = self.gv['nom_jeu'].get().strip()
-        return prenom, email, nom_jeu
+        # Adresses CC non vides
+        cc_emails = [
+            self._club_cc_email[i].get().strip()
+            for i in range(2)
+            if self._club_cc_email[i].get().strip()
+        ]
+        return prenom, email, nom_jeu, cc_emails
 
     def _send_club_test(self):
-        prenom, _email, nom_jeu = self._get_club_email_data()
+        prenom, _email, nom_jeu, cc_emails = self._get_club_email_data()
         if not prenom:
             messagebox.showwarning("Contact incomplet",
                 "Saisissez le prénom du contact.")
@@ -1679,7 +1731,7 @@ class FlashFMApp(tk.Tk):
 
         def run():
             try:
-                send_smtp(TEST_EMAIL, subject, html, plain)
+                send_smtp(TEST_EMAIL, subject, html, plain, cc_addrs=cc_emails)
                 self.after(0, lambda: self._log(
                     f"✓  Test mail club → {TEST_EMAIL}"))
                 def ok():
@@ -1700,13 +1752,14 @@ class FlashFMApp(tk.Tk):
         threading.Thread(target=run, daemon=True).start()
 
     def _send_club_real(self):
-        prenom, email, nom_jeu = self._get_club_email_data()
+        prenom, email, nom_jeu, cc_emails = self._get_club_email_data()
         if not prenom or not email:
             messagebox.showwarning("Contact incomplet",
                 "Saisissez le prénom et l'email du contact.")
             return
+        cc_info = f"\nCC : {', '.join(cc_emails)}" if cc_emails else ""
         if not messagebox.askyesno("Confirmation",
-                f"Envoyer la liste des gagnants à :\n{prenom} <{email}> ?"):
+                f"Envoyer la liste des gagnants à :\n{prenom} <{email}>{cc_info} ?"):
             return
         subject, html, plain = build_club_email(prenom, nom_jeu, self.winners)
         self.lbl_club_send.config(text="⏳  Envoi en cours…", fg=C_GRAY)
@@ -1714,12 +1767,13 @@ class FlashFMApp(tk.Tk):
 
         def run():
             try:
-                send_smtp(email, subject, html, plain)
+                send_smtp(email, subject, html, plain, cc_addrs=cc_emails)
+                dest = email + (f" + {len(cc_emails)} en CC" if cc_emails else "")
                 self.after(0, lambda: self._log(
-                    f"✓  Mail club envoyé → {email}"))
+                    f"✓  Mail club envoyé → {dest}"))
                 def ok():
                     self.lbl_club_send.config(
-                        text=f"✓  Mail envoyé à {email}", fg=C_GREEN)
+                        text=f"✓  Mail envoyé à {dest}", fg=C_GREEN)
                     messagebox.showinfo("Envoyé",
                         f"Mail envoyé à {prenom} <{email}>")
                 self.after(0, ok)
@@ -2099,8 +2153,91 @@ def sports_export_to_sheet(ws, winners, nom_jeu, date, lieu, winner_urls):
     return start_row
 
 
+def sports_register_winners_in_history(sh, winners, nom_jeu, log_cb):
+    """
+    Enregistre les gagnants d'un tirage sports dans l'onglet « liste des gagnants ».
+    - Si le gagnant a déjà une ligne (victoire récente bypass) : ajoute la date
+      dans la colonne nouvellement insérée.
+    - Sinon : ajoute une nouvelle ligne puis ajoute la date.
+    Insère une colonne une seule fois pour tout le batch.
+    """
+    try:
+        ws       = sh.worksheet("liste des gagnants")
+        all_vals = ws.get_all_values()
+    except Exception as exc:
+        log_cb(f"⚠  « liste des gagnants » introuvable ({exc}) – mise à jour ignorée.")
+        return
+
+    header_row = all_vals[2] if len(all_vals) > 2 else []
+    nom_col    = _find_col(header_row, ['nom'])
+    prenom_col = _find_col(header_row, ['prenom', 'prénom'])
+    if nom_col    is None: nom_col    = 0
+    if prenom_col is None: prenom_col = 1
+
+    today   = datetime.now()
+    MOIS_FR = ["janvier","février","mars","avril","mai","juin",
+               "juillet","août","septembre","octobre","novembre","décembre"]
+    mois_an = f"{MOIS_FR[today.month - 1]} {today.year}"
+
+    # Insérer la colonne de date une seule fois
+    sh.batch_update({"requests": [{"insertDimension": {
+        "range": {"sheetId": ws.id, "dimension": "COLUMNS",
+                  "startIndex": 5, "endIndex": 6},
+        "inheritFromBefore": False
+    }}]})
+    ws.update(values=[[f"{nom_jeu} {mois_an}"]], range_name="F3")
+
+    # Re-lire après insertion de colonne
+    all_vals = ws.get_all_values()
+
+    for candidate in winners:
+        nom_norm = normalize(candidate['nom'])
+        prn_norm = normalize(candidate['prenom'])
+
+        row_1idx = None
+        for i, row in enumerate(all_vals):
+            if i < 3 or not any(c.strip() for c in row):
+                continue
+            n_val = row[nom_col].strip()    if nom_col    < len(row) else ""
+            p_val = row[prenom_col].strip() if prenom_col < len(row) else ""
+            if normalize(n_val) == nom_norm and normalize(p_val) == prn_norm:
+                row_1idx = i + 1
+                break
+
+        if row_1idx is None:
+            # Nouvelle ligne
+            first_empty = len(all_vals) + 1
+            for i in range(3, len(all_vals)):
+                if not any(c.strip() for c in all_vals[i]):
+                    first_empty = i + 1
+                    break
+            ws.update(
+                values=[[candidate['nom'], candidate['prenom'],
+                         candidate.get('ville', ''), candidate['email'],
+                         format_phone(candidate['phone'])]],
+                range_name=f"A{first_empty}:E{first_empty}"
+            )
+            row_1idx = first_empty
+            # Mise à jour locale pour les prochains candidats
+            while len(all_vals) < first_empty:
+                all_vals.append([])
+            all_vals[first_empty - 1] = [
+                candidate['nom'], candidate['prenom'],
+                candidate.get('ville', ''), candidate['email'],
+                format_phone(candidate['phone'])
+            ]
+            log_cb(f"✓  Ajout dans « liste des gagnants » : "
+                   f"{candidate['prenom']} {candidate['nom']}")
+        else:
+            log_cb(f"✓  Mise à jour « liste des gagnants » : "
+                   f"{candidate['prenom']} {candidate['nom']} (ligne {row_1idx})")
+
+        ws.update(values=[[today.strftime("%d/%m/%Y")]], range_name=f"F{row_1idx}")
+
+
 def sports_draw_with_checks(participants, n, creds_path, ws_name,
-                             log_cb, done_cb, error_cb):
+                             log_cb, done_cb, error_cb,
+                             bypass_6months=False):
     """
     Tirage au sort pour la variante sports avec 4 règles d'exclusion :
       0. Présent dans l'onglet « Joueurs à bannir des jeux ».
@@ -2109,6 +2246,7 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
          (pour éviter qu'une même famille gagne deux fois).
       3. A gagné un cadeau dans les 6 derniers mois
          (vérifié dans l'onglet « liste des gagnants »).
+         Ignoré si bypass_6months=True.
     N'écrit rien dans Google Sheets (l'export est une étape séparée).
     """
     sh       = _sheets_client(creds_path)
@@ -2135,23 +2273,26 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
     hist_prn_col = 1
     hist_date_cols = []
     use_history = False
-    try:
-        hist_ws   = sh.worksheet("liste des gagnants")
-        hist_vals = hist_ws.get_all_values()
-        header_row = hist_vals[2] if len(hist_vals) > 2 else []
-        c_nom    = _find_col(header_row, ['nom'])
-        c_prn    = _find_col(header_row, ['prenom', 'prénom'])
-        hist_nom_col = c_nom if c_nom is not None else 0
-        hist_prn_col = c_prn if c_prn is not None else 1
-        hist_date_cols = [i for i in range(5, len(header_row))
-                          if header_row[i].strip()]
-        hist_rows = [row for i, row in enumerate(hist_vals)
-                     if i >= 3 and any(c.strip() for c in row)]
-        log_cb(f"Historique « liste des gagnants » : {len(hist_rows)} ligne(s) chargée(s).")
-        use_history = True
-    except Exception as exc:
-        log_cb(f"⚠  « liste des gagnants » introuvable ({exc})"
-               f" — vérification 6 mois ignorée.")
+    if bypass_6months:
+        log_cb("ℹ  Vérification 6 mois désactivée (mode bypass).")
+    else:
+        try:
+            hist_ws   = sh.worksheet("liste des gagnants")
+            hist_vals = hist_ws.get_all_values()
+            header_row = hist_vals[2] if len(hist_vals) > 2 else []
+            c_nom    = _find_col(header_row, ['nom'])
+            c_prn    = _find_col(header_row, ['prenom', 'prénom'])
+            hist_nom_col = c_nom if c_nom is not None else 0
+            hist_prn_col = c_prn if c_prn is not None else 1
+            hist_date_cols = [i for i in range(5, len(header_row))
+                              if header_row[i].strip()]
+            hist_rows = [row for i, row in enumerate(hist_vals)
+                         if i >= 3 and any(c.strip() for c in row)]
+            log_cb(f"Historique « liste des gagnants » : {len(hist_rows)} ligne(s) chargée(s).")
+            use_history = True
+        except Exception as exc:
+            log_cb(f"⚠  « liste des gagnants » introuvable ({exc})"
+                   f" — vérification 6 mois ignorée.")
 
     pool = [p for p in participants if p['email']]
     random.shuffle(pool)
@@ -2219,8 +2360,11 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
         log_cb(f"✓  {candidate['prenom']} {candidate['nom']}")
 
     if len(winners) < n:
+        raisons = "banni, déjà gagnant cette saison, même famille"
+        if not bypass_6months:
+            raisons += ", ou < 6 mois"
         error_cb(f"Seulement {len(winners)}/{n} gagnants éligibles "
-                 f"({excluded} exclu(s) : banni, déjà gagnant cette saison, même famille, ou < 6 mois).")
+                 f"({excluded} exclu(s) : {raisons}).")
     done_cb(winners)
 
 
@@ -2242,9 +2386,10 @@ class SportsApp(tk.Toplevel):
         cfg              = load_sports_config()
         self.clubs       = load_clubs()
         self.templates   = load_templates()
-        self.participants = []
-        self.winners     = []
-        self.winner_urls = {}
+        self.participants  = []
+        self.winners       = []
+        self.winner_urls   = {}
+        self._bypass_6months = tk.BooleanVar(value=False)
         self.creds_path  = tk.StringVar(
             value=find_credentials_file() or '')
         self.v_tab_name  = tk.StringVar()
@@ -2861,7 +3006,23 @@ class SportsApp(tk.Toplevel):
                       "saison en lisant l'onglet Google Sheets sélectionné en ③. "
                       "Les gagnants ne sont PAS écrits dans « liste des gagnants ».",
                  bg=C_WHITE, fg="#666", font=("", 9),
-                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 10))
+                 wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 6))
+
+        # Option bypass 6 mois
+        bypass_row = tk.Frame(f, bg=C_WHITE)
+        bypass_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Checkbutton(
+            bypass_row,
+            text="Ignorer la vérification 6 mois (participants peu nombreux)",
+            variable=self._bypass_6months,
+            bg=C_WHITE, font=("", 10),
+            activebackground=C_WHITE,
+        ).pack(side=tk.LEFT)
+        tk.Label(bypass_row,
+                 text="  ⚠ Si coché, les gagnants récents seront mis à jour dans "
+                      "« liste des gagnants » lors de l'export ⑦",
+                 bg=C_WHITE, fg=C_RED, font=("", 8),
+                 wraplength=500, justify=tk.LEFT).pack(side=tk.LEFT)
 
         self.btn_draw = ColorButton(f, text="🎲   LANCER LE TIRAGE",
                                      command=self._do_draw,
@@ -2918,16 +3079,19 @@ class SportsApp(tk.Toplevel):
         self.lbl_draw.config(text="Lecture de l'onglet…", fg=C_GRAY)
         self.update()
 
+        bypass = self._bypass_6months.get()
+
         def run():
             try:
                 sports_draw_with_checks(
                     filtered, n,
                     self.creds_path.get(), self.v_tab_name.get(),
-                    log_cb   = lambda m: self.after(0, lambda msg=m: self._log(msg)),
-                    done_cb  = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
-                    error_cb = lambda m: self.after(0, lambda msg=m:
-                                   messagebox.showwarning("Tirage incomplet", msg,
-                                                          parent=self))
+                    log_cb        = lambda m: self.after(0, lambda msg=m: self._log(msg)),
+                    done_cb       = lambda w: self.after(0, lambda wl=w: self._draw_done(wl)),
+                    error_cb      = lambda m: self.after(0, lambda msg=m:
+                                       messagebox.showwarning("Tirage incomplet", msg,
+                                                              parent=self)),
+                    bypass_6months = bypass,
                 )
             except Exception as e:
                 self.after(0, lambda: self.lbl_draw.config(
@@ -3101,6 +3265,7 @@ class SportsApp(tk.Toplevel):
         date    = self.gv['date'].get()
         lieu    = self.gv['lieu'].get()
         tab     = self.v_tab_name.get()
+        bypass  = self._bypass_6months.get()
 
         def run():
             try:
@@ -3113,6 +3278,17 @@ class SportsApp(tk.Toplevel):
                     fg=C_GREEN))
                 self.after(0, lambda: self._log(
                     f"Sheets : tableau exporté dans « {tab} » (ligne {row})"))
+
+                # Mise à jour de « liste des gagnants » si bypass 6 mois actif
+                if bypass:
+                    self.after(0, lambda: self._log(
+                        "⏳  Mise à jour de « liste des gagnants »…"))
+                    sports_register_winners_in_history(
+                        sh, self.winners, nom_jeu,
+                        log_cb=lambda m: self.after(0, lambda msg=m: self._log(msg))
+                    )
+                    self.after(0, lambda: self._log(
+                        "✓  « liste des gagnants » mis à jour."))
             except Exception as e:
                 err = str(e)
                 self.after(0, lambda: self.lbl_sheets.config(
