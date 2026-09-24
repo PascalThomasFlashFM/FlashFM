@@ -2882,11 +2882,13 @@ class SportsApp(tk.Toplevel):
     @staticmethod
     def _list_tickets(folder):
         try:
-            return sorted(
-                f for f in os.listdir(folder)
-                if os.path.isfile(os.path.join(folder, f))
-                and not f.startswith('.')
-            )
+            files = [f for f in os.listdir(folder)
+                     if os.path.isfile(os.path.join(folder, f))
+                     and not f.startswith('.')]
+            def _key(fn):
+                m = re.search(r'(\d+)\s*$', os.path.splitext(fn)[0])
+                return (int(m.group(1)) if m else float('inf'), fn)
+            return sorted(files, key=_key)
         except OSError:
             return []
 
@@ -3420,38 +3422,38 @@ class SportsApp(tk.Toplevel):
             return
 
         if self.winners:
-            items = [(self._variables(winner=w), w) for w in self.winners]
+            w = self.winners[0]
+            v = self._variables(winner=w)
         else:
-            items = [(self._variables(), None)]
+            w = None
+            v = self._variables()
 
-        self.lbl_send.config(
-            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
+        self.lbl_send.config(text="⏳  Envoi du mail de test…", fg=C_GRAY)
         self.update()
 
         def run():
             ok_count, errs = 0, []
-            for v, w in items:
-                subject = f"[TEST] {apply_vars(tpl['subject'], v)}"
-                html    = apply_vars(tpl['html'],  v)
-                plain   = apply_vars(tpl['plain'], v)
-                try:
-                    send_smtp(TEST_EMAIL, subject, html, plain)
-                    ok_count += 1
-                    name = f"{w['prenom']} {w['nom']}" if w else "test"
-                    self.after(0, lambda n=name: self._log(
-                        f"✓  Test ({n}) → {TEST_EMAIL}"))
-                except Exception as e:
-                    errs.append(str(e))
-                    self.after(0, lambda err=str(e): self._log(
-                        f"✗  Erreur SMTP : {err}"))
+            subject = f"[TEST] {apply_vars(tpl['subject'], v)}"
+            html    = apply_vars(tpl['html'],  v)
+            plain   = apply_vars(tpl['plain'], v)
+            try:
+                send_smtp(TEST_EMAIL, subject, html, plain)
+                ok_count += 1
+                name = f"{w['prenom']} {w['nom']}" if w else "test"
+                self.after(0, lambda n=name: self._log(
+                    f"✓  Test ({n}) → {TEST_EMAIL}"))
+            except Exception as e:
+                errs.append(str(e))
+                self.after(0, lambda err=str(e): self._log(
+                    f"✗  Erreur SMTP : {err}"))
 
             def finish():
                 if not errs:
                     self.lbl_send.config(
-                        text=f"✓  {ok_count} mail(s) de test envoyé(s) à {TEST_EMAIL}",
+                        text=f"✓  Mail de test envoyé à {TEST_EMAIL}",
                         fg=C_GREEN)
-                    messagebox.showinfo("Tests envoyés",
-                        f"{ok_count} mail(s) envoyé(s) à {TEST_EMAIL}\n"
+                    messagebox.showinfo("Test envoyé",
+                        f"Mail de test envoyé à {TEST_EMAIL}\n"
                         f"(sujet préfixé [TEST])", parent=self)
                 else:
                     self.lbl_send.config(
@@ -4044,10 +4046,14 @@ class SpectacleApp(tk.Toplevel):
 
     def _list_tickets(self, folder):
         exts = {'.pdf', '.pkpass', '.png', '.jpg', '.jpeg'}
-        return sorted([f for f in os.listdir(folder)
-                       if os.path.isfile(os.path.join(folder, f))
-                       and os.path.splitext(f)[1].lower() in exts
-                       and not f.startswith('.')])
+        files = [f for f in os.listdir(folder)
+                 if os.path.isfile(os.path.join(folder, f))
+                 and os.path.splitext(f)[1].lower() in exts
+                 and not f.startswith('.')]
+        def _key(fn):
+            m = re.search(r'(\d+)\s*$', os.path.splitext(fn)[0])
+            return (int(m.group(1)) if m else float('inf'), fn)
+        return sorted(files, key=_key)
 
     def _ask_name(self, title, prompt, initial=""):
         d = tk.Toplevel(self)
@@ -4491,32 +4497,33 @@ class SpectacleApp(tk.Toplevel):
         if not tpl:
             messagebox.showwarning("Modèle", "Sélectionnez un modèle.", parent=self)
             return
-        items = ([(self._variables(prenom=w['prenom'], nom=w['nom'], winner=w), w)
-                  for w in self.winners]
-                 if self.winners else [(self._variables(), None)])
-        self.lbl_send.config(
-            text=f"⏳  Envoi de {len(items)} mail(s) de test…", fg=C_GRAY)
+        if self.winners:
+            w = self.winners[0]
+            v = self._variables(prenom=w['prenom'], nom=w['nom'], winner=w)
+        else:
+            w = None
+            v = self._variables()
+        self.lbl_send.config(text="⏳  Envoi du mail de test…", fg=C_GRAY)
         self.update()
 
         def run():
             ok, errs = 0, []
-            for v, w in items:
-                try:
-                    send_smtp(TEST_EMAIL,
-                              f"[TEST] {apply_vars(tpl['subject'], v)}",
-                              apply_vars(tpl['html'],  v),
-                              apply_vars(tpl['plain'], v))
-                    ok += 1
-                    name = f"{w['prenom']} {w['nom']}" if w else "test"
-                    self.after(0, lambda n=name: self._log(
-                        f"✓  Test ({n}) → {TEST_EMAIL}"))
-                except Exception as e:
-                    errs.append(str(e))
-                    self.after(0, lambda err=str(e): self._log(
-                        f"✗  Erreur SMTP : {err}"))
+            try:
+                send_smtp(TEST_EMAIL,
+                          f"[TEST] {apply_vars(tpl['subject'], v)}",
+                          apply_vars(tpl['html'],  v),
+                          apply_vars(tpl['plain'], v))
+                ok += 1
+                name = f"{w['prenom']} {w['nom']}" if w else "test"
+                self.after(0, lambda n=name: self._log(
+                    f"✓  Test ({n}) → {TEST_EMAIL}"))
+            except Exception as e:
+                errs.append(str(e))
+                self.after(0, lambda err=str(e): self._log(
+                    f"✗  Erreur SMTP : {err}"))
 
             color = C_GREEN if not errs else C_RED
-            msg   = (f"✓  {ok} mail(s) de test envoyé(s) à {TEST_EMAIL}"
+            msg   = (f"✓  Mail de test envoyé à {TEST_EMAIL}"
                      if not errs else f"⚠  {len(errs)} erreur(s) — voir journal")
             self.after(0, lambda: self.lbl_send.config(text=msg, fg=color))
 
