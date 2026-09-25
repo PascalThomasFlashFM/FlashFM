@@ -1,1 +1,561 @@
-"""\nFlashCash - Import CSV vers Google Sheets\nCopie les inscriptions joueurs d'un fichier CSV vers la feuille Google Sheets Flash Cash.\n"""\n\nimport csv\nimport json\nimport os\nimport re\nimport sys\nimport tkinter as tk\nfrom datetime import datetime\nfrom tkinter import filedialog, messagebox, scrolledtext, ttk\nfrom pathlib import Path\n\nimport gspread\nfrom google.oauth2.service_account import Credentials\n\n# ── Configuration ────────────────────────────────────────────\nSPREADSHEET_ID = "1pAoPThNMkDNh7zUMTEAJiltKaLAMioNAMCT1-ELqQnU"\nSHEET_GID = 821980008\nCREDENTIALS_FILE = Path(__file__).parent / "credentials.json"\n\nSCOPES = [\n    "https://www.googleapis.com/auth/spreadsheets",\n    "https://www.googleapis.com/auth/drive",\n]\n\n# Regex patterns\nRE_EMAIL = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.I)\nRE_PHONE = re.compile(\n    r"(?:(?:\+33|0033)\s*)?(?:0?\s*[1-9])(?:[\s.\-]?\d{2}){4}"\n)\nRE_POSTAL_CITY = re.compile(r"\b(\d{5})\s+([A-ZÀ-Ÿa-zà-ÿ\s\-]+?)(?=[,;\n]|$)", re.I)\nRE_POSTAL = re.compile(r"\b\d{5}\b")\nRE_DATE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")\n\n\n# ── Parsing helpers ───────────────────────────────────────────────\n\ndef normalise_phone(raw: str) -> str:\n    """Formate un numéro de téléphone en 'xx xx xx xx xx'."""\n    digits = re.sub(r"\D", "", raw)\n    if digits.startswith("33") and len(digits) == 11:\n        digits = "0" + digits[2:]\n    if len(digits) == 10:\n        return " ".join(digits[i:i+2] for i in range(0, 10, 2))\n    return digits  # fallback brut si format inconnu\n\n\ndef extract_fields(coordonnees: str) -> dict:\n    """\n    Extrait Prénom, Nom, téléphone, ville, email depuis la chaîne 'Coordonnees'.\n    Gère les formats : virgule-séparé, espace-séparé, multi-lignes, ordre variable.\n    """\n    result = {"prenom": "", "nom": "", "telephone": "", "ville": "", "email": ""}\n    if not coordonnees or not isinstance(coordonnees, str):\n        return result\n\n    # Normaliser les retours à la ligne en espaces\n    text = re.sub(r"\s*[\r\n]+\s*", " ", coordonnees).strip()\n\n    # ── email ──────────────────────────────────────────────────────────────────────\n    email_match = RE_EMAIL.search(text)\n    if email_match:\n        result["email"] = email_match.group(0).strip()\n        text = text[:email_match.start()] + " " + text[email_match.end():]\n\n    # ── téléphone ──────────────────────────────────────────────────────────────────────\n    phone_match = RE_PHONE.search(text)\n    if phone_match:\n        result["telephone"] = normalise_phone(phone_match.group(0))\n        text = text[:phone_match.start()] + " " + text[phone_match.end():]\n\n    # Normaliser les espaces multiples\n    text = re.sub(r"\s+", " ", text).strip()\n\n    # ── ville via code postal (XXXXX NomVille) ─────────────────────────────────────────\n    city_match = RE_POSTAL_CITY.search(text)\n    if city_match:\n        result["ville"] = city_match.group(2).strip().title()\n        prefix = text[:city_match.start()].strip().rstrip(",;")\n        suffix = text[city_match.end():].strip().lstrip(",;")\n        prefix_words = prefix.split()\n        clean_prefix_words = []\n        hit_address = False\n        for w in prefix_words:\n            if re.match(r"^\d", w):\n                hit_address = True\n            if not hit_address:\n                clean_prefix_words.append(w)\n        text = " ".join(clean_prefix_words) + (" " + suffix if suffix else "")\n        text = re.sub(r"\s+", " ", text).strip()\n    else:\n        postal_match = RE_POSTAL.search(text)\n        if postal_match:\n            text = (text[:postal_match.start()] + " " + text[postal_match.end():]).strip()\n\n    # ── Nom / Prénom ──────────────────────────────────────────────────────────────────────\n    def assign_name_city(words):\n        """words[0]=Nom, words[1]=Prénom, words[2:]=Ville (si ville pas encore connue)."""\n        if words:\n            result["nom"] = words[0].upper()\n        if len(words) >= 2:\n            result["prenom"] = words[1].title()\n        if len(words) >= 3 and not result["ville"]:\n            result["ville"] = " ".join(words[2:]).title()\n\n    # Cas 1 : séparateurs virgule ou point-virgule → split par virgule\n    if re.search(r"[,;]", text):\n        parts = [p.strip() for p in re.split(r"[,;]+", text)\n                 if p.strip() and len(p.strip()) > 2 and not re.match(r"^\d", p.strip())]\n        if parts:\n            first_words = parts[0].split()\n            if len(first_words) >= 2 and len(parts) == 1:\n                assign_name_city(first_words)\n            elif len(first_words) >= 3 and len(parts) >= 1:\n                result["nom"] = first_words[0].upper()\n                result["prenom"] = " ".join(first_words[1:]).title()\n                if not result["ville"] and len(parts) > 1:\n                    result["ville"] = parts[1].title()\n            else:\n                result["nom"] = parts[0].upper()\n                result["prenom"] = parts[1].title() if len(parts) > 1 else ""\n                if not result["ville"] and len(parts) > 2:\n                    result["ville"] = parts[2].title()\n    else:\n        # Cas 2 : tout espace-séparé → mot[0]=Nom, mot[1]=Prénom, reste=Ville\n        words = [w for w in text.split() if len(w) > 1 and not re.match(r"^\d", w)]\n        assign_name_city(words)\n\n    return result\n\n\ndef _phone_key(phone: str) -> str:\n    """Normalise un numéro en chiffres seuls pour la comparaison."""\n    digits = re.sub(r"\D", "", phone)\n    if digits.startswith("33") and len(digits) == 11:\n        digits = "0" + digits[2:]\n    return digits\n\n\ndef get_existing_keys(all_values: list) -> set:\n    """\n    Construit un set de clés d'identification à partir des valeurs déjà\n    lues depuis le Google Sheet (colonnes B=Prénom, C=Nom, D=Téléphone, G=Email).\n    """\n    keys = set()\n    for row in all_values:\n        if len(row) < 4:\n            continue\n        prenom = row[1].strip() if len(row) > 1 else ""\n        nom    = row[2].strip() if len(row) > 2 else ""\n        tel    = row[3].strip() if len(row) > 3 else ""\n        email  = row[6].strip().lower() if len(row) > 6 else ""\n        phone_digits = _phone_key(tel)\n        if phone_digits and len(phone_digits) >= 9:\n            keys.add("tel:" + phone_digits)\n        if email and "@" in email:\n            keys.add("email:" + email)\n        if nom or prenom:\n            keys.add("name:" + (nom + prenom).lower().replace(" ", ""))\n    return keys\n\n\ndef get_history_index(all_values: list) -> dict:\n    """\n    Construit un index des passages en direct depuis les valeurs du sheet.\n    Retourne {(nom_lower, prenom_lower): [date_str, ...]} pour toutes les\n    lignes où la colonne A contient une date (format jj/mm/aa ou jj/mm/aaaa).\n    """\n    index = {}\n    for row in all_values:\n        col_a  = row[0].strip() if len(row) > 0 else ""\n        prenom = row[1].strip() if len(row) > 1 else ""\n        nom    = row[2].strip() if len(row) > 2 else ""\n        if not RE_DATE.match(col_a):\n            continue\n        if not nom and not prenom:\n            continue\n        key = (nom.lower(), prenom.lower())\n        index.setdefault(key, []).append(col_a)\n    return index\n\n\ndef _parse_date(date_str: str):\n    """Tente de parser une date au format jj/mm/aa ou jj/mm/aaaa."""\n    for fmt in ("%d/%m/%y", "%d/%m/%Y"):\n        try:\n            return datetime.strptime(date_str, fmt)\n        except ValueError:\n            pass\n    return None\n\n\ndef record_key(rec: dict) -> list:\n    """Retourne toutes les clés possibles pour un enregistrement CSV."""\n    keys = []\n    phone_digits = _phone_key(rec.get("telephone", ""))\n    if phone_digits and len(phone_digits) >= 9:\n        keys.append("tel:" + phone_digits)\n    email = rec.get("email", "").strip().lower()\n    if email and "@" in email:\n        keys.append("email:" + email)\n    nom    = rec.get("nom", "").strip()\n    prenom = rec.get("prenom", "").strip()\n    if nom or prenom:\n        keys.append("name:" + (nom + prenom).lower().replace(" ", ""))\n    return keys\n\n\ndef get_worksheet():\n    """Retourne la feuille Google Sheets cible."""\n    creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)\n    client = gspread.authorize(creds)\n    spreadsheet = client.open_by_key(SPREADSHEET_ID)\n    for ws in spreadsheet.worksheets():\n        if ws.id == SHEET_GID:\n            return ws\n    raise ValueError(f"Onglet avec gid={SHEET_GID} introuvable.")\n\n\ndef find_first_empty_row(ws, empty_threshold: int = 20) -> int:\n    """\n    Retourne la première ligne disponible après la dernière zone de données\n    en colonne B, définie comme la dernière ligne non vide suivie d'au moins\n    `empty_threshold` lignes vides consécutives.\n    """\n    col_b = ws.col_values(2)\n    n = len(col_b)\n    consecutive_empty = 0\n    last_data_row = 0\n\n    for i in range(n - 1, -1, -1):\n        if col_b[i].strip():\n            if consecutive_empty >= empty_threshold or last_data_row == 0:\n                last_data_row = i + 1\n                break\n            else:\n                consecutive_empty = 0\n        else:\n            consecutive_empty += 1\n\n    if last_data_row == 0:\n        for i in range(n - 1, -1, -1):\n            if col_b[i].strip():\n                last_data_row = i + 1\n                break\n\n    return last_data_row + 1\n\n\ndef write_to_sheet(records: list, log_callback=None) -> tuple:\n    """\n    Écrit les enregistrements nouveaux dans le Google Sheet.\n    Déduplique contre les entrées déjà présentes.\n    Retourne (nb_ajoutés, nb_ignorés).\n    """\n    def log(msg):\n        if log_callback:\n            log_callback(msg)\n\n    log("Connexion à Google Sheets...")\n    ws = get_worksheet()\n\n    log("Lecture des données existantes dans la feuille...")\n    all_values = ws.get_all_values()\n    existing_keys = get_existing_keys(all_values)\n    history_index = get_history_index(all_values)\n    log(f"  → {len(existing_keys)} clés d'identification trouvées.")\n\n    start_row = find_first_empty_row(ws)\n    log(f"Première ligne disponible : {start_row}")\n\n    rows_to_append = []\n    skipped = 0\n    for rec in records:\n        keys = record_key(rec)\n        if any(k in existing_keys for k in keys):\n            skipped += 1\n            continue\n\n        nom_lower    = rec["nom"].strip().lower()\n        prenom_lower = rec["prenom"].strip().lower()\n        hist_dates   = history_index.get((nom_lower, prenom_lower), [])\n\n        col_h = ""\n        col_i = ""\n        if hist_dates:\n            col_h = str(len(hist_dates))\n            parsed = [_parse_date(d) for d in hist_dates]\n            parsed = [d for d in parsed if d is not None]\n            if parsed:\n                last_dt = max(parsed)\n                col_i = last_dt.strftime("%d/%m/%Y")\n\n        row = ["", rec["prenom"], rec["nom"], rec["telephone"], rec["ville"], "", rec["email"], col_h, col_i]\n        rows_to_append.append(row)\n        for k in keys:\n            existing_keys.add(k)\n\n    if skipped:\n        log(f"  → {skipped} inscrit(s) déjà présent(s) ignoré(s).")\n\n    if not rows_to_append:\n        log("Aucun nouvel enregistrement à écrire.")\n        return 0, skipped\n\n    end_row = start_row + len(rows_to_append) - 1\n    cell_range = f"A{start_row}:I{end_row}"\n    log(f"Écriture de {len(rows_to_append)} nouvelle(s) ligne(s) dans {cell_range}...")\n    ws.update(cell_range, rows_to_append, value_input_option="USER_ENTERED")\n    log(f"✓ {len(rows_to_append)} joueur(s) ajouté(s) avec succès.")\n    return len(rows_to_append), skipped\n\n\n# ── Lecture CSV ─────────────────────────────────────────────────────────────────\n\ndef parse_csv(filepath: str) -> list:\n    """\n    Lit le CSV et retourne une liste de dicts avec les champs extraits.\n    Gère les encodages UTF-8 et Latin-1, les délimiteurs ; et ,\n    et les champs multi-lignes entre guillemets.\n    """\n    records = []\n    encodings = ["utf-8-sig", "latin-1", "utf-8"]\n\n    rows = None\n    last_error = None\n\n    for enc in encodings:\n        for delimiter in [";", ",", "\t"]:\n            try:\n                with open(filepath, newline="", encoding=enc) as f:\n                    reader = csv.DictReader(f, delimiter=delimiter)\n                    candidate = list(reader)\n                if candidate and len(candidate[0].keys()) >= 2:\n                    rows = candidate\n                    break\n            except Exception as exc:\n                last_error = exc\n        if rows is not None:\n            break\n\n    if rows is None:\n        raise ValueError(\n            f"Impossible de lire le fichier CSV.\n"\n            f"Dernière erreur : {last_error}"\n        )\n\n    coord_col = None\n    for col in rows[0].keys():\n        col_clean = col.strip().lstrip("\ufeff").lower()\n        if "coordonn" in col_clean:\n            coord_col = col\n            break\n\n    if coord_col is None:\n        cols = list(rows[0].keys())\n        raise ValueError(\n            f"Colonne 'Coordonnees' introuvable dans le CSV.\n"\n            f"Colonnes détectées ({len(cols)}) : {cols}"\n        )\n\n    for row in rows:\n        raw = row.get(coord_col, "") or ""\n        raw = " ".join(raw.splitlines()).strip()\n        if raw:\n            fields = extract_fields(raw)\n            fields["_raw"] = raw\n            records.append(fields)\n\n    return records\n\n\n# ── Interface graphique ───────────────────────────────────────────────────────────────\n\nclass App(tk.Tk):\n    def __init__(self):\n        super().__init__()\n        self.title("FlashCash – Import CSV → Google Sheets")\n        self.resizable(True, True)\n        self.minsize(720, 500)\n        self._csv_path = tk.StringVar()\n        self._records: list = []\n        self._build_ui()\n        self._center()\n\n    def _center(self):\n        self.update_idletasks()\n        w, h = 800, 600\n        x = (self.winfo_screenwidth() - w) // 2\n        y = (self.winfo_screenheight() - h) // 2\n        self.geometry(f"{w}x{h}+{x}+{y}")\n\n    def _build_ui(self):\n        BG       = "#1e1e2e"\n        BG2      = "#2a2a3e"\n        FG       = "#cdd6f4"\n        FG_DIM   = "#aaaacc"\n        ACCENT   = "#e8c547"\n        BTN_BROWSE  = "#4a4a7a"\n        BTN_RESET   = "#5a3a6a"\n        BTN_IMPORT  = "#2d6a4f"\n        BTN_DONE    = "#1a5c38"\n\n        self.configure(bg=BG)\n\n        header = tk.Frame(self, bg="#12122a", pady=14)\n        header.pack(fill="x")\n        tk.Label(\n            header, text="FlashCash  –  Import Joueurs",\n            font=("Helvetica", 17, "bold"), fg=ACCENT, bg="#12122a"\n        ).pack()\n        tk.Label(\n            header, text="Importation CSV vers Google Sheets",\n            font=("Helvetica", 10), fg=FG_DIM, bg="#12122a"\n        ).pack()\n\n        file_frame = tk.LabelFrame(\n            self, text=" Fichier CSV ",\n            bg=BG, fg=FG, padx=10, pady=8\n        )\n        file_frame.pack(fill="x", padx=16, pady=(14, 4))\n\n        entry = tk.Entry(\n            file_frame, textvariable=self._csv_path, state="readonly",\n            width=60, font=("Courier", 10),\n            bg=BG2, fg=FG, insertbackground=FG,\n            readonlybackground=BG2, relief="flat", bd=4\n        )\n        entry.pack(side="left", expand=True, fill="x", padx=(0, 8))\n\n        tk.Button(\n            file_frame, text="Parcourir…", command=self._browse,\n            bg=BTN_BROWSE, fg="white", activebackground="#6060a0",\n            activeforeground="white", relief="raised", padx=12, pady=5,\n            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,\n            highlightthickness=0\n        ).pack(side="left")\n\n        preview_frame = tk.LabelFrame(\n            self, text=" Aperçu des données parsées ",\n            bg=BG, fg=FG, padx=10, pady=6\n        )\n        preview_frame.pack(fill="both", expand=True, padx=16, pady=4)\n\n        style = ttk.Style()\n        style.theme_use("default")\n        style.configure("Dark.Treeview",\n            background=BG2, foreground=FG,\n            fieldbackground=BG2, rowheight=22,\n            font=("Helvetica", 9)\n        )\n        style.configure("Dark.Treeview.Heading",\n            background="#3a3a5e", foreground=ACCENT,\n            font=("Helvetica", 9, "bold"), relief="flat"\n        )\n        style.map("Dark.Treeview", background=[("selected", "#3d5a80")])\n\n        cols = ("Prénom", "Nom", "Téléphone", "Ville", "Email")\n        self._tree = ttk.Treeview(\n            preview_frame, columns=cols, show="headings",\n            height=8, style="Dark.Treeview"\n        )\n        widths = [110, 130, 120, 130, 210]\n        for col, w in zip(cols, widths):\n            self._tree.heading(col, text=col)\n            self._tree.column(col, width=w, anchor="w")\n\n        vsb = ttk.Scrollbar(preview_frame, orient="vertical", command=self._tree.yview)\n        self._tree.configure(yscrollcommand=vsb.set)\n        self._tree.pack(side="left", fill="both", expand=True)\n        vsb.pack(side="right", fill="y")\n\n        log_frame = tk.LabelFrame(\n            self, text=" Journal ",\n            bg=BG, fg=FG, padx=10, pady=6\n        )\n        log_frame.pack(fill="x", padx=16, pady=4)\n\n        self._log = scrolledtext.ScrolledText(\n            log_frame, height=5, state="disabled",\n            font=("Courier", 9), bg="#0d0d1a", fg="#88ff88",\n            insertbackground="#88ff88", relief="flat", bd=2\n        )\n        self._log.pack(fill="x")\n\n        btn_frame = tk.Frame(self, bg=BG, pady=12)\n        btn_frame.pack()\n\n        self._btn_import = tk.Button(\n            btn_frame, text="▶  Écrire dans Google Sheets",\n            command=self._import, state="disabled",\n            font=("Helvetica", 12, "bold"),\n            bg=BTN_IMPORT, fg="white",\n            activebackground="#3d8b62", activeforeground="white",\n            disabledforeground="#888888", disabledbackground="#1a3d2b",\n            relief="raised", padx=22, pady=10, cursor="hand2", bd=2,\n            highlightthickness=0\n        )\n        self._btn_import.pack(side="left", padx=8)\n        self._BTN_IMPORT_COLOR = BTN_IMPORT\n        self._BTN_DONE_COLOR   = BTN_DONE\n\n        tk.Button(\n            btn_frame, text="Réinitialiser", command=self._reset,\n            bg=BTN_RESET, fg="white",\n            activebackground="#7a4a8a", activeforeground="white",\n            relief="raised", padx=14, pady=10,\n            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,\n            highlightthickness=0\n        ).pack(side="left", padx=8)\n\n    # ── Actions ───────────────────────────────────────────────────────────────────────\n\n    def _log_msg(self, msg: str):\n        self._log.configure(state="normal")\n        self._log.insert("end", msg + "\n")\n        self._log.see("end")\n        self._log.configure(state="disabled")\n        self.update_idletasks()\n\n    def _browse(self):\n        path = filedialog.askopenfilename(\n            title="Sélectionner le fichier CSV",\n            filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")]\n        )\n        if not path:\n            return\n        self._csv_path.set(path)\n        self._load_preview(path)\n\n    def _load_preview(self, path: str):\n        self._tree.delete(*self._tree.get_children())\n        self._records = []\n        try:\n            self._records = parse_csv(path)\n            for rec in self._records:\n                self._tree.insert("", "end", values=(\n                    rec["prenom"], rec["nom"],\n                    rec["telephone"], rec["ville"], rec["email"]\n                ))\n            self._log_msg(f"✓ Fichier chargé : {len(self._records)} inscrit(s) détecté(s).")\n            self._btn_import.configure(state="normal")\n        except Exception as exc:\n            messagebox.showerror("Erreur de lecture CSV", str(exc))\n            self._log_msg(f"✗ Erreur : {exc}")\n            self._btn_import.configure(state="disabled")\n\n    def _import(self):\n        if not self._records:\n            messagebox.showwarning("Aucune donnée", "Veuillez d'abord charger un fichier CSV.")\n            return\n\n        if not messagebox.askyesno(\n            "Confirmation",\n            f"{len(self._records)} inscrit(s) dans le fichier CSV.\n\n"\n            "L'application ignorera automatiquement ceux déjà présents\n"\n            "dans Google Sheets et n'ajoutera que les nouveaux.\n\n"\n            "Continuer ?"\n        ):\n            return\n\n        self._btn_import.configure(state="disabled", text="⏳  En cours…")\n        self.update_idletasks()\n\n        try:\n            added, skipped = write_to_sheet(self._records, log_callback=self._log_msg)\n            msg = f"{added} nouveau(x) joueur(s) ajouté(s) dans Google Sheets."\n            if skipped:\n                msg += f"\n{skipped} inscrit(s) déjà présent(s) ignoré(s)."\n            messagebox.showinfo("Import terminé", msg)\n            self._btn_import.configure(text="✓  Import terminé", bg=self._BTN_DONE_COLOR, fg="white")\n        except Exception as exc:\n            messagebox.showerror("Erreur d'import", str(exc))\n            self._log_msg(f"✗ Erreur : {exc}")\n            self._btn_import.configure(\n                state="normal", text="▶  Écrire dans Google Sheets",\n                bg=self._BTN_IMPORT_COLOR, fg="white"\n            )\n\n    def _reset(self):\n        self._csv_path.set("")\n        self._records = []\n        self._tree.delete(*self._tree.get_children())\n        self._log.configure(state="normal")\n        self._log.delete("1.0", "end")\n        self._log.configure(state="disabled")\n        self._btn_import.configure(\n            state="disabled", text="▶  Écrire dans Google Sheets",\n            bg=self._BTN_IMPORT_COLOR, fg="white"\n        )\n\n\n# ── Point d'entrée ─────────────────────────────────────────────────────────────────\n\nif __name__ == "__main__":\n    if not CREDENTIALS_FILE.exists():\n        print(f"ERREUR : fichier de credentials introuvable : {CREDENTIALS_FILE}", file=sys.stderr)\n        sys.exit(1)\n    app = App()\n    app.mainloop()\n
+"""
+FlashCash - Import CSV vers Google Sheets
+Copie les inscriptions joueurs d'un fichier CSV vers la feuille Google Sheets Flash Cash.
+"""
+
+import csv
+import json
+import os
+import re
+import sys
+import tkinter as tk
+from datetime import datetime
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+from pathlib import Path
+
+import gspread
+from google.oauth2.service_account import Credentials
+
+# ── Configuration ────────────────────────────────────────────
+SPREADSHEET_ID = "1pAoPThNMkDNh7zUMTEAJiltKaLAMioNAMCT1-ELqQnU"
+SHEET_GID = 821980008
+CREDENTIALS_FILE = Path(__file__).parent / "credentials.json"
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+# Regex patterns
+RE_EMAIL = re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", re.I)
+RE_PHONE = re.compile(
+    r"(?:(?:\+33|0033)\s*)?(?:0?\s*[1-9])(?:[\s.\-]?\d{2}){4}"
+)
+RE_POSTAL_CITY = re.compile(r"\b(\d{5})\s+([A-Z\xc0-Ÿa-z\xe0-\xff\s\-]+?)(?=[,;\n]|$)", re.I)
+RE_POSTAL = re.compile(r"\b\d{5}\b")
+RE_DATE = re.compile(r"^\d{1,2}/\d{1,2}/\d{2,4}$")
+
+
+# ── Parsing helpers ───────────────────────────────────────────────
+
+def normalise_phone(raw: str) -> str:
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("33") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    if len(digits) == 10:
+        return " ".join(digits[i:i+2] for i in range(0, 10, 2))
+    return digits
+
+
+def extract_fields(coordonnees: str) -> dict:
+    result = {"prenom": "", "nom": "", "telephone": "", "ville": "", "email": ""}
+    if not coordonnees or not isinstance(coordonnees, str):
+        return result
+
+    text = re.sub(r"\s*[\r\n]+\s*", " ", coordonnees).strip()
+
+    email_match = RE_EMAIL.search(text)
+    if email_match:
+        result["email"] = email_match.group(0).strip()
+        text = text[:email_match.start()] + " " + text[email_match.end():]
+
+    phone_match = RE_PHONE.search(text)
+    if phone_match:
+        result["telephone"] = normalise_phone(phone_match.group(0))
+        text = text[:phone_match.start()] + " " + text[phone_match.end():]
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    city_match = RE_POSTAL_CITY.search(text)
+    if city_match:
+        result["ville"] = city_match.group(2).strip().title()
+        prefix = text[:city_match.start()].strip().rstrip(",;")
+        suffix = text[city_match.end():].strip().lstrip(",;")
+        prefix_words = prefix.split()
+        clean_prefix_words = []
+        hit_address = False
+        for w in prefix_words:
+            if re.match(r"^\d", w):
+                hit_address = True
+            if not hit_address:
+                clean_prefix_words.append(w)
+        text = " ".join(clean_prefix_words) + (" " + suffix if suffix else "")
+        text = re.sub(r"\s+", " ", text).strip()
+    else:
+        postal_match = RE_POSTAL.search(text)
+        if postal_match:
+            text = (text[:postal_match.start()] + " " + text[postal_match.end():]).strip()
+
+    def assign_name_city(words):
+        if words:
+            result["nom"] = words[0].upper()
+        if len(words) >= 2:
+            result["prenom"] = words[1].title()
+        if len(words) >= 3 and not result["ville"]:
+            result["ville"] = " ".join(words[2:]).title()
+
+    if re.search(r"[,;]", text):
+        parts = [p.strip() for p in re.split(r"[,;]+", text)
+                 if p.strip() and len(p.strip()) > 2 and not re.match(r"^\d", p.strip())]
+        if parts:
+            first_words = parts[0].split()
+            if len(first_words) >= 2 and len(parts) == 1:
+                assign_name_city(first_words)
+            elif len(first_words) >= 3 and len(parts) >= 1:
+                result["nom"] = first_words[0].upper()
+                result["prenom"] = " ".join(first_words[1:]).title()
+                if not result["ville"] and len(parts) > 1:
+                    result["ville"] = parts[1].title()
+            else:
+                result["nom"] = parts[0].upper()
+                result["prenom"] = parts[1].title() if len(parts) > 1 else ""
+                if not result["ville"] and len(parts) > 2:
+                    result["ville"] = parts[2].title()
+    else:
+        words = [w for w in text.split() if len(w) > 1 and not re.match(r"^\d", w)]
+        assign_name_city(words)
+
+    return result
+
+
+def _phone_key(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone)
+    if digits.startswith("33") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    return digits
+
+
+def get_existing_keys(all_values: list) -> set:
+    keys = set()
+    for row in all_values:
+        if len(row) < 4:
+            continue
+        prenom = row[1].strip() if len(row) > 1 else ""
+        nom    = row[2].strip() if len(row) > 2 else ""
+        tel    = row[3].strip() if len(row) > 3 else ""
+        email  = row[6].strip().lower() if len(row) > 6 else ""
+        phone_digits = _phone_key(tel)
+        if phone_digits and len(phone_digits) >= 9:
+            keys.add("tel:" + phone_digits)
+        if email and "@" in email:
+            keys.add("email:" + email)
+        if nom or prenom:
+            keys.add("name:" + (nom + prenom).lower().replace(" ", ""))
+    return keys
+
+
+def get_history_index(all_values: list) -> dict:
+    index = {}
+    for row in all_values:
+        col_a  = row[0].strip() if len(row) > 0 else ""
+        prenom = row[1].strip() if len(row) > 1 else ""
+        nom    = row[2].strip() if len(row) > 2 else ""
+        if not RE_DATE.match(col_a):
+            continue
+        if not nom and not prenom:
+            continue
+        key = (nom.lower(), prenom.lower())
+        index.setdefault(key, []).append(col_a)
+    return index
+
+
+def _parse_date(date_str: str):
+    for fmt in ("%d/%m/%y", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            pass
+    return None
+
+
+def record_key(rec: dict) -> list:
+    keys = []
+    phone_digits = _phone_key(rec.get("telephone", ""))
+    if phone_digits and len(phone_digits) >= 9:
+        keys.append("tel:" + phone_digits)
+    email = rec.get("email", "").strip().lower()
+    if email and "@" in email:
+        keys.append("email:" + email)
+    nom    = rec.get("nom", "").strip()
+    prenom = rec.get("prenom", "").strip()
+    if nom or prenom:
+        keys.append("name:" + (nom + prenom).lower().replace(" ", ""))
+    return keys
+
+
+def get_worksheet():
+    creds = Credentials.from_service_account_file(str(CREDENTIALS_FILE), scopes=SCOPES)
+    client = gspread.authorize(creds)
+    spreadsheet = client.open_by_key(SPREADSHEET_ID)
+    for ws in spreadsheet.worksheets():
+        if ws.id == SHEET_GID:
+            return ws
+    raise ValueError(f"Onglet avec gid={SHEET_GID} introuvable.")
+
+
+def find_first_empty_row(ws, empty_threshold: int = 20) -> int:
+    col_b = ws.col_values(2)
+    n = len(col_b)
+    consecutive_empty = 0
+    last_data_row = 0
+
+    for i in range(n - 1, -1, -1):
+        if col_b[i].strip():
+            if consecutive_empty >= empty_threshold or last_data_row == 0:
+                last_data_row = i + 1
+                break
+            else:
+                consecutive_empty = 0
+        else:
+            consecutive_empty += 1
+
+    if last_data_row == 0:
+        for i in range(n - 1, -1, -1):
+            if col_b[i].strip():
+                last_data_row = i + 1
+                break
+
+    return last_data_row + 1
+
+
+def write_to_sheet(records: list, log_callback=None) -> tuple:
+    def log(msg):
+        if log_callback:
+            log_callback(msg)
+
+    log("Connexion \xe0 Google Sheets...")
+    ws = get_worksheet()
+
+    log("Lecture des donn\xe9es existantes dans la feuille...")
+    all_values = ws.get_all_values()
+    existing_keys = get_existing_keys(all_values)
+    history_index = get_history_index(all_values)
+    log(f"  → {len(existing_keys)} cl\xe9s d'identification trouv\xe9es.")
+
+    start_row = find_first_empty_row(ws)
+    log(f"Premi\xe8re ligne disponible : {start_row}")
+
+    rows_to_append = []
+    skipped = 0
+    for rec in records:
+        keys = record_key(rec)
+        if any(k in existing_keys for k in keys):
+            skipped += 1
+            continue
+
+        nom_lower    = rec["nom"].strip().lower()
+        prenom_lower = rec["prenom"].strip().lower()
+        hist_dates   = history_index.get((nom_lower, prenom_lower), [])
+
+        col_h = ""
+        col_i = ""
+        if hist_dates:
+            col_h = str(len(hist_dates))
+            parsed = [_parse_date(d) for d in hist_dates]
+            parsed = [d for d in parsed if d is not None]
+            if parsed:
+                last_dt = max(parsed)
+                col_i = last_dt.strftime("%d/%m/%Y")
+
+        row = ["", rec["prenom"], rec["nom"], rec["telephone"], rec["ville"], "", rec["email"], col_h, col_i]
+        rows_to_append.append(row)
+        for k in keys:
+            existing_keys.add(k)
+
+    if skipped:
+        log(f"  → {skipped} inscrit(s) d\xe9j\xe0 pr\xe9sent(s) ignor\xe9(s).")
+
+    if not rows_to_append:
+        log("Aucun nouvel enregistrement \xe0 \xe9crire.")
+        return 0, skipped
+
+    end_row = start_row + len(rows_to_append) - 1
+    cell_range = f"A{start_row}:I{end_row}"
+    log(f"\xc9criture de {len(rows_to_append)} nouvelle(s) ligne(s) dans {cell_range}...")
+    ws.update(cell_range, rows_to_append, value_input_option="USER_ENTERED")
+    log(f"✓ {len(rows_to_append)} joueur(s) ajout\xe9(s) avec succ\xe8s.")
+    return len(rows_to_append), skipped
+
+
+# ── Lecture CSV ─────────────────────────────────────────────────────────────────
+
+def parse_csv(filepath: str) -> list:
+    records = []
+    encodings = ["utf-8-sig", "latin-1", "utf-8"]
+
+    rows = None
+    last_error = None
+
+    for enc in encodings:
+        for delimiter in [";", ",", "\t"]:
+            try:
+                with open(filepath, newline="", encoding=enc) as f:
+                    reader = csv.DictReader(f, delimiter=delimiter)
+                    candidate = list(reader)
+                if candidate and len(candidate[0].keys()) >= 2:
+                    rows = candidate
+                    break
+            except Exception as exc:
+                last_error = exc
+        if rows is not None:
+            break
+
+    if rows is None:
+        raise ValueError(
+            f"Impossible de lire le fichier CSV.\n"
+            f"Derni\xe8re erreur : {last_error}"
+        )
+
+    coord_col = None
+    for col in rows[0].keys():
+        col_clean = col.strip().lstrip("﻿").lower()
+        if "coordonn" in col_clean:
+            coord_col = col
+            break
+
+    if coord_col is None:
+        cols = list(rows[0].keys())
+        raise ValueError(
+            f"Colonne 'Coordonnees' introuvable dans le CSV.\n"
+            f"Colonnes d\xe9tect\xe9es ({len(cols)}) : {cols}"
+        )
+
+    for row in rows:
+        raw = row.get(coord_col, "") or ""
+        raw = " ".join(raw.splitlines()).strip()
+        if raw:
+            fields = extract_fields(raw)
+            fields["_raw"] = raw
+            records.append(fields)
+
+    return records
+
+
+# ── Interface graphique ───────────────────────────────────────────────────────────────
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("FlashCash – Import CSV → Google Sheets")
+        self.resizable(True, True)
+        self.minsize(720, 500)
+        self._csv_path = tk.StringVar()
+        self._records: list = []
+        self._build_ui()
+        self._center()
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = 800, 600
+        x = (self.winfo_screenwidth() - w) // 2
+        y = (self.winfo_screenheight() - h) // 2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _build_ui(self):
+        BG       = "#1e1e2e"
+        BG2      = "#2a2a3e"
+        FG       = "#cdd6f4"
+        FG_DIM   = "#aaaacc"
+        ACCENT   = "#e8c547"
+        BTN_BROWSE  = "#4a4a7a"
+        BTN_RESET   = "#5a3a6a"
+        BTN_IMPORT  = "#2d6a4f"
+        BTN_DONE    = "#1a5c38"
+
+        self.configure(bg=BG)
+
+        header = tk.Frame(self, bg="#12122a", pady=14)
+        header.pack(fill="x")
+        tk.Label(
+            header, text="FlashCash  –  Import Joueurs",
+            font=("Helvetica", 17, "bold"), fg=ACCENT, bg="#12122a"
+        ).pack()
+        tk.Label(
+            header, text="Importation CSV vers Google Sheets",
+            font=("Helvetica", 10), fg=FG_DIM, bg="#12122a"
+        ).pack()
+
+        file_frame = tk.LabelFrame(
+            self, text=" Fichier CSV ",
+            bg=BG, fg=FG, padx=10, pady=8
+        )
+        file_frame.pack(fill="x", padx=16, pady=(14, 4))
+
+        entry = tk.Entry(
+            file_frame, textvariable=self._csv_path, state="readonly",
+            width=60, font=("Courier", 10),
+            bg=BG2, fg=FG, insertbackground=FG,
+            readonlybackground=BG2, relief="flat", bd=4
+        )
+        entry.pack(side="left", expand=True, fill="x", padx=(0, 8))
+
+        tk.Button(
+            file_frame, text="Parcourir…", command=self._browse,
+            bg=BTN_BROWSE, fg="white", activebackground="#6060a0",
+            activeforeground="white", relief="raised", padx=12, pady=5,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,
+            highlightthickness=0
+        ).pack(side="left")
+
+        preview_frame = tk.LabelFrame(
+            self, text=" Aper\xe7u des donn\xe9es pars\xe9es ",
+            bg=BG, fg=FG, padx=10, pady=6
+        )
+        preview_frame.pack(fill="both", expand=True, padx=16, pady=4)
+
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("Dark.Treeview",
+            background=BG2, foreground=FG,
+            fieldbackground=BG2, rowheight=22,
+            font=("Helvetica", 9)
+        )
+        style.configure("Dark.Treeview.Heading",
+            background="#3a3a5e", foreground=ACCENT,
+            font=("Helvetica", 9, "bold"), relief="flat"
+        )
+        style.map("Dark.Treeview", background=[("selected", "#3d5a80")])
+
+        cols = ("Pr\xe9nom", "Nom", "T\xe9l\xe9phone", "Ville", "Email")
+        self._tree = ttk.Treeview(
+            preview_frame, columns=cols, show="headings",
+            height=8, style="Dark.Treeview"
+        )
+        widths = [110, 130, 120, 130, 210]
+        for col, w in zip(cols, widths):
+            self._tree.heading(col, text=col)
+            self._tree.column(col, width=w, anchor="w")
+
+        vsb = ttk.Scrollbar(preview_frame, orient="vertical", command=self._tree.yview)
+        self._tree.configure(yscrollcommand=vsb.set)
+        self._tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        log_frame = tk.LabelFrame(
+            self, text=" Journal ",
+            bg=BG, fg=FG, padx=10, pady=6
+        )
+        log_frame.pack(fill="x", padx=16, pady=4)
+
+        self._log = scrolledtext.ScrolledText(
+            log_frame, height=5, state="disabled",
+            font=("Courier", 9), bg="#0d0d1a", fg="#88ff88",
+            insertbackground="#88ff88", relief="flat", bd=2
+        )
+        self._log.pack(fill="x")
+
+        btn_frame = tk.Frame(self, bg=BG, pady=12)
+        btn_frame.pack()
+
+        self._btn_import = tk.Button(
+            btn_frame, text="▶  \xc9crire dans Google Sheets",
+            command=self._import, state="disabled",
+            font=("Helvetica", 12, "bold"),
+            bg=BTN_IMPORT, fg="white",
+            activebackground="#3d8b62", activeforeground="white",
+            disabledforeground="#888888", disabledbackground="#1a3d2b",
+            relief="raised", padx=22, pady=10, cursor="hand2", bd=2,
+            highlightthickness=0
+        )
+        self._btn_import.pack(side="left", padx=8)
+        self._BTN_IMPORT_COLOR = BTN_IMPORT
+        self._BTN_DONE_COLOR   = BTN_DONE
+
+        tk.Button(
+            btn_frame, text="R\xe9initialiser", command=self._reset,
+            bg=BTN_RESET, fg="white",
+            activebackground="#7a4a8a", activeforeground="white",
+            relief="raised", padx=14, pady=10,
+            font=("Helvetica", 10, "bold"), cursor="hand2", bd=2,
+            highlightthickness=0
+        ).pack(side="left", padx=8)
+
+    # ── Actions ───────────────────────────────────────────────────────────────────────
+
+    def _log_msg(self, msg: str):
+        self._log.configure(state="normal")
+        self._log.insert("end", msg + "\n")
+        self._log.see("end")
+        self._log.configure(state="disabled")
+        self.update_idletasks()
+
+    def _browse(self):
+        path = filedialog.askopenfilename(
+            title="S\xe9lectionner le fichier CSV",
+            filetypes=[("Fichiers CSV", "*.csv"), ("Tous les fichiers", "*.*")]
+        )
+        if not path:
+            return
+        self._csv_path.set(path)
+        self._load_preview(path)
+
+    def _load_preview(self, path: str):
+        self._tree.delete(*self._tree.get_children())
+        self._records = []
+        try:
+            self._records = parse_csv(path)
+            for rec in self._records:
+                self._tree.insert("", "end", values=(
+                    rec["prenom"], rec["nom"],
+                    rec["telephone"], rec["ville"], rec["email"]
+                ))
+            self._log_msg(f"✓ Fichier charg\xe9 : {len(self._records)} inscrit(s) d\xe9tect\xe9(s).")
+            self._btn_import.configure(state="normal")
+        except Exception as exc:
+            messagebox.showerror("Erreur de lecture CSV", str(exc))
+            self._log_msg(f"✗ Erreur : {exc}")
+            self._btn_import.configure(state="disabled")
+
+    def _import(self):
+        if not self._records:
+            messagebox.showwarning("Aucune donn\xe9e", "Veuillez d'abord charger un fichier CSV.")
+            return
+
+        if not messagebox.askyesno(
+            "Confirmation",
+            f"{len(self._records)} inscrit(s) dans le fichier CSV.\n\n"
+            "L'application ignorera automatiquement ceux d\xe9j\xe0 pr\xe9sents\n"
+            "dans Google Sheets et n'ajoutera que les nouveaux.\n\n"
+            "Continuer ?"
+        ):
+            return
+
+        self._btn_import.configure(state="disabled", text="⏳  En cours…")
+        self.update_idletasks()
+
+        try:
+            added, skipped = write_to_sheet(self._records, log_callback=self._log_msg)
+            msg = f"{added} nouveau(x) joueur(s) ajout\xe9(s) dans Google Sheets."
+            if skipped:
+                msg += f"\n{skipped} inscrit(s) d\xe9j\xe0 pr\xe9sent(s) ignor\xe9(s)."
+            messagebox.showinfo("Import termin\xe9", msg)
+            self._btn_import.configure(text="✓  Import termin\xe9", bg=self._BTN_DONE_COLOR, fg="white")
+        except Exception as exc:
+            messagebox.showerror("Erreur d'import", str(exc))
+            self._log_msg(f"✗ Erreur : {exc}")
+            self._btn_import.configure(
+                state="normal", text="▶  \xc9crire dans Google Sheets",
+                bg=self._BTN_IMPORT_COLOR, fg="white"
+            )
+
+    def _reset(self):
+        self._csv_path.set("")
+        self._records = []
+        self._tree.delete(*self._tree.get_children())
+        self._log.configure(state="normal")
+        self._log.delete("1.0", "end")
+        self._log.configure(state="disabled")
+        self._btn_import.configure(
+            state="disabled", text="▶  \xc9crire dans Google Sheets",
+            bg=self._BTN_IMPORT_COLOR, fg="white"
+        )
+
+
+# ── Point d'entrée ─────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    if not CREDENTIALS_FILE.exists():
+        print(f"ERREUR : fichier de credentials introuvable : {CREDENTIALS_FILE}", file=sys.stderr)
+        sys.exit(1)
+    app = App()
+    app.mainloop()
