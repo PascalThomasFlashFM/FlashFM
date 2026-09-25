@@ -453,7 +453,7 @@ class App(tk.Tk):
             font=("Helvetica", 12, "bold"),
             bg=BTN_IMPORT, fg="white",
             activebackground="#3d8b62", activeforeground="white",
-            disabledforeground="#888888", disabledbackground="#1a3d2b",
+            disabledforeground="#888888",
             relief="raised", padx=22, pady=10, cursor="hand2", bd=2,
             highlightthickness=0
         )
