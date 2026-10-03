@@ -2258,7 +2258,7 @@ def sports_register_winners_in_history(sh, winners, nom_jeu, log_cb):
 
 def sports_draw_with_checks(participants, n, creds_path, ws_name,
                              log_cb, done_cb, error_cb,
-                             bypass_6months=False):
+                             bypass_6months=False, nom_jeu=""):
     """
     Tirage au sort pour la variante sports avec 4 règles d'exclusion :
       0. Présent dans l'onglet « Joueurs à bannir des jeux ».
@@ -2268,7 +2268,7 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
       3. A gagné un cadeau dans les 6 derniers mois
          (vérifié dans l'onglet « liste des gagnants »).
          Ignoré si bypass_6months=True.
-    N'écrit rien dans Google Sheets (l'export est une étape séparée).
+    Enregistre les gagnants dans « liste des gagnants » à la fin du tirage.
     """
     sh       = _sheets_client(creds_path)
     ws       = sh.worksheet(ws_name)
@@ -2386,6 +2386,12 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
             raisons += ", ou < 6 mois"
         error_cb(f"Seulement {len(winners)}/{n} gagnants éligibles "
                  f"({excluded} exclu(s) : {raisons}).")
+
+    if winners:
+        log_cb("⏳  Enregistrement dans « liste des gagnants »…")
+        sports_register_winners_in_history(
+            sh, winners, nom_jeu or ws_name, log_cb)
+
     done_cb(winners)
 
 
@@ -3027,7 +3033,8 @@ class SportsApp(tk.Toplevel):
         tk.Label(f,
                  text="ℹ  Vérifie que chaque candidat n'a pas déjà gagné cette "
                       "saison en lisant l'onglet Google Sheets sélectionné en ③. "
-                      "Les gagnants ne sont PAS écrits dans « liste des gagnants ».",
+                      "Les gagnants sont enregistrés dans « liste des gagnants » "
+                      "immédiatement après le tirage.",
                  bg=C_WHITE, fg="#666", font=("", 9),
                  wraplength=680, justify=tk.LEFT).pack(anchor="w", pady=(0, 6))
 
@@ -3042,8 +3049,8 @@ class SportsApp(tk.Toplevel):
             activebackground=C_WHITE,
         ).pack(side=tk.LEFT)
         tk.Label(bypass_row,
-                 text="  ⚠ Si coché, les gagnants récents seront mis à jour dans "
-                      "« liste des gagnants » lors de l'export ⑦",
+                 text="  ⚠ Si coché, la vérification 6 mois est ignorée "
+                      "(les gagnants sont quand même enregistrés dans « liste des gagnants »)",
                  bg=C_WHITE, fg=C_RED, font=("", 8),
                  wraplength=500, justify=tk.LEFT).pack(side=tk.LEFT)
 
@@ -3102,7 +3109,8 @@ class SportsApp(tk.Toplevel):
         self.lbl_draw.config(text="Lecture de l'onglet…", fg=C_GRAY)
         self.update()
 
-        bypass = self._bypass_6months.get()
+        bypass  = self._bypass_6months.get()
+        nom_jeu = self.gv['nom_jeu'].get()
 
         def run():
             try:
@@ -3115,6 +3123,7 @@ class SportsApp(tk.Toplevel):
                                        messagebox.showwarning("Tirage incomplet", msg,
                                                               parent=self)),
                     bypass_6months = bypass,
+                    nom_jeu        = nom_jeu,
                 )
             except Exception as e:
                 self.after(0, lambda: self.lbl_draw.config(
@@ -3301,17 +3310,6 @@ class SportsApp(tk.Toplevel):
                     fg=C_GREEN))
                 self.after(0, lambda: self._log(
                     f"Sheets : tableau exporté dans « {tab} » (ligne {row})"))
-
-                # Mise à jour de « liste des gagnants » si bypass 6 mois actif
-                if bypass:
-                    self.after(0, lambda: self._log(
-                        "⏳  Mise à jour de « liste des gagnants »…"))
-                    sports_register_winners_in_history(
-                        sh, self.winners, nom_jeu,
-                        log_cb=lambda m: self.after(0, lambda msg=m: self._log(msg))
-                    )
-                    self.after(0, lambda: self._log(
-                        "✓  « liste des gagnants » mis à jour."))
             except Exception as e:
                 err = str(e)
                 self.after(0, lambda: self.lbl_sheets.config(
