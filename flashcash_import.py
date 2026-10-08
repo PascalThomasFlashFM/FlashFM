@@ -125,38 +125,35 @@ def _phone_key(phone: str) -> str:
     return digits
 
 
-def get_existing_keys(all_values: list) -> set:
-    keys = set()
+def get_existing_players(all_values: list) -> dict:
+    """
+    Retourne {cle: [col_a_value, ...]} pour chaque ligne du sheet.
+    col_a_value = valeur brute de la colonne A : date si le joueur a joue,
+    chaine vide si le joueur est en attente.
+    """
+    players = {}
     for row in all_values:
-        if len(row) < 4:
+        if len(row) < 2:
             continue
+        col_a  = row[0].strip() if len(row) > 0 else ""
         prenom = row[1].strip() if len(row) > 1 else ""
         nom    = row[2].strip() if len(row) > 2 else ""
         tel    = row[3].strip() if len(row) > 3 else ""
         email  = row[6].strip().lower() if len(row) > 6 else ""
+
+        row_keys = []
         phone_digits = _phone_key(tel)
         if phone_digits and len(phone_digits) >= 9:
-            keys.add("tel:" + phone_digits)
+            row_keys.append("tel:" + phone_digits)
         if email and "@" in email:
-            keys.add("email:" + email)
+            row_keys.append("email:" + email)
         if nom or prenom:
-            keys.add("name:" + (nom + prenom).lower().replace(" ", ""))
-    return keys
+            row_keys.append("name:" + (nom + prenom).lower().replace(" ", ""))
 
+        for k in row_keys:
+            players.setdefault(k, []).append(col_a)
 
-def get_history_index(all_values: list) -> dict:
-    index = {}
-    for row in all_values:
-        col_a  = row[0].strip() if len(row) > 0 else ""
-        prenom = row[1].strip() if len(row) > 1 else ""
-        nom    = row[2].strip() if len(row) > 2 else ""
-        if not RE_DATE.match(col_a):
-            continue
-        if not nom and not prenom:
-            continue
-        key = (nom.lower(), prenom.lower())
-        index.setdefault(key, []).append(col_a)
-    return index
+    return players
 
 
 def _parse_date(date_str: str):
@@ -226,44 +223,68 @@ def write_to_sheet(records: list, log_callback=None) -> tuple:
     log("Connexion \xe0 Google Sheets...")
     ws = get_worksheet()
 
-    log("Lecture des donn\xe9es existantes dans la feuille...")
+    log("Lecture des données existantes dans la feuille...")
     all_values = ws.get_all_values()
-    existing_keys = get_existing_keys(all_values)
-    history_index = get_history_index(all_values)
-    log(f"  → {len(existing_keys)} cl\xe9s d'identification trouv\xe9es.")
+    existing_players = get_existing_players(all_values)
+    today = datetime.now()
+    log(f"  → {len(existing_players)} clés d'identification trouvées.")
 
     start_row = find_first_empty_row(ws)
-    log(f"Premi\xe8re ligne disponible : {start_row}")
+    log(f"Première ligne disponible : {start_row}")
 
     rows_to_append = []
     skipped = 0
+    added_keys = set()  # doublons dans le même CSV
+
     for rec in records:
         keys = record_key(rec)
-        if any(k in existing_keys for k in keys):
+
+        if any(k in added_keys for k in keys):
             skipped += 1
             continue
 
-        nom_lower    = rec["nom"].strip().lower()
-        prenom_lower = rec["prenom"].strip().lower()
-        hist_dates   = history_index.get((nom_lower, prenom_lower), [])
+        # Collecte toutes les valeurs col A des lignes correspondant à ce joueur
+        col_a_values = []
+        for k in keys:
+            if k in existing_players:
+                col_a_values.extend(existing_players[k])
 
         col_h = ""
-        col_i = ""
-        if hist_dates:
-            col_h = str(len(hist_dates))
-            parsed = [_parse_date(d) for d in hist_dates]
-            parsed = [d for d in parsed if d is not None]
-            if parsed:
-                last_dt = max(parsed)
-                col_i = last_dt.strftime("%d/%m/%Y")
 
-        row = ["", rec["prenom"], rec["nom"], rec["telephone"], rec["ville"], "", rec["email"], col_h, col_i]
+        if col_a_values:
+            # Au moins une ligne sans date → joueur en attente → ignorer
+            has_pending = any(v == "" or not RE_DATE.match(v) for v in col_a_values)
+            if has_pending:
+                skipped += 1
+                log(f"  · {rec['prenom']} {rec['nom']} : déjà en attente de jouer → ignoré.")
+                continue
+
+            # Toutes les lignes ont une date → vérifier la plus récente
+            parsed = [_parse_date(v) for v in col_a_values if _parse_date(v)]
+
+            if not parsed:
+                skipped += 1
+                continue
+
+            most_recent = max(parsed)
+            days_ago = (today - most_recent).days
+
+            if days_ago <= 30:
+                skipped += 1
+                log(f"  · {rec['prenom']} {rec['nom']} : passé(e) à l'antenne il y a {days_ago}j → ignoré.")
+                continue
+            else:
+                # Passé il y a plus de 30 jours → réinscrire avec l'ancienne date en col H
+                col_h = most_recent.strftime("%d/%m/%Y")
+                log(f"  · {rec['prenom']} {rec['nom']} : dernier passage {col_h} ({days_ago}j) → réinscrit(e).")
+
+        row = ["", rec["prenom"], rec["nom"], rec["telephone"], rec["ville"], "", rec["email"], col_h, ""]
         rows_to_append.append(row)
         for k in keys:
-            existing_keys.add(k)
+            added_keys.add(k)
 
     if skipped:
-        log(f"  → {skipped} inscrit(s) d\xe9j\xe0 pr\xe9sent(s) ignor\xe9(s).")
+        log(f"  → {skipped} inscrit(s) ignoré(s) au total.")
 
     if not rows_to_append:
         log("Aucun nouvel enregistrement \xe0 \xe9crire.")
