@@ -80,6 +80,13 @@ def format_phone(phone):
     return phone
 
 
+def normalize_phone(phone):
+    """Retourne uniquement les chiffres du numéro pour comparaison."""
+    if not phone:
+        return ""
+    return re.sub(r'\D', '', str(phone))
+
+
 def parse_date(s):
     """Tente de parser une date en plusieurs formats ; retourne None si échec."""
     s = s.strip()
@@ -276,30 +283,39 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
                      est quand même enregistré dans l'historique).
     La colonne F n'est insérée qu'une seule fois (premier gagnant validé) ;
     les gagnants suivants réutilisent cette même colonne.
+    Vérifie nom+prénom ET téléphone contre les bannis et l'historique.
     """
-    nom    = normalize(candidate['nom'])
-    prenom = normalize(candidate['prenom'])
-    today  = datetime.now()
+    nom        = normalize(candidate['nom'])
+    prenom     = normalize(candidate['prenom'])
+    phone_norm = normalize_phone(candidate.get('phone', ''))
+    today      = datetime.now()
 
-    # ── Vérification 1 : liste des bannis ─────────────────
-    for row in banned_rows:
-        row_text = normalize(' '.join(row))
+    # ── Vérification 1 : liste des bannis (nom/prénom ou téléphone) ───────
+    for brow in banned_rows:
+        row_text = normalize(' '.join(brow))
         if nom in row_text and prenom in row_text:
-            return False, "Banni des jeux"
+            return False, "Banni des jeux (nom/prénom)"
+        if phone_norm:
+            for cell in brow:
+                if normalize_phone(cell) == phone_norm:
+                    return False, "Banni des jeux (téléphone)"
 
-    # ── Vérification 2 : lecture fraîche de l'historique ──
+    # ── Vérification 2 : lecture fraîche de l'historique ──────────────────
     ws       = sh.worksheet("liste des gagnants")
     all_vals = ws.get_all_values()
 
     header_row = all_vals[2] if len(all_vals) > 2 else []
     nom_col    = _find_col(header_row, ['nom'])
     prenom_col = _find_col(header_row, ['prenom', 'prénom'])
+    phone_col  = _find_col(header_row, ['telephone', 'téléphone', 'tel'])
     if nom_col    is None: nom_col    = 0
     if prenom_col is None: prenom_col = 1
+    if phone_col  is None: phone_col  = 4
 
     date_cols = [i for i in range(5, len(header_row)) if header_row[i].strip()]
 
-    winner_row_1idx = None
+    winner_row_1idx  = None
+    phone_match_name = None   # nom/prénom trouvé via correspondance téléphone
     for i, row in enumerate(all_vals):
         if i < 3 or not any(c.strip() for c in row):
             continue
@@ -308,6 +324,12 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
         if normalize(n_val) == nom and normalize(p_val) == prenom:
             winner_row_1idx = i + 1
             break
+        # Correspondance par téléphone (nom/prénom différents → pseudonyme détecté)
+        if phone_norm and phone_col < len(row):
+            if normalize_phone(row[phone_col]) == phone_norm:
+                winner_row_1idx  = i + 1
+                phone_match_name = f"{n_val} {p_val}".strip()
+                break
 
     six_months_ago = today - timedelta(days=183)
 
@@ -337,15 +359,19 @@ def validate_and_register_winner(candidate, nom_jeu, sh, banned_rows,
                     recent.append(d)
         if recent and not bypass_6months:
             last = max(recent).strftime('%d/%m/%Y')
-            return False, f"A gagné le {last} (moins de 6 mois)"
+            suffix = (f" (connu sous : {phone_match_name})"
+                      if phone_match_name else "")
+            return False, f"A gagné le {last} (moins de 6 mois){suffix}"
         last_all = []
         for i in date_cols:
             if i < len(row) and row[i].strip():
                 d = parse_date(row[i])
                 if d:
                     last_all.append(d)
+        suffix = (f" (connu sous : {phone_match_name})" if phone_match_name else "")
         reason = (f"OK (dernière victoire le {max(last_all).strftime('%d/%m/%Y')}, "
-                  f"plus de 6 mois)") if last_all else "OK (déjà gagnant, sans date récente)"
+                  f"plus de 6 mois){suffix}") if last_all else \
+                 f"OK (déjà gagnant, sans date récente){suffix}"
 
     # ── Colonne F : insérée une seule fois pour le tirage ──
     if not col_inserted[0]:
@@ -385,11 +411,21 @@ def draw_with_checks(participants, n, creds_path, nom_jeu,
     random.shuffle(pool)
 
     winners, excluded = [], 0
-    col_inserted = [False]
+    col_inserted  = [False]
+    drawn_phones  = set()   # téléphones déjà gagnants dans cette session
 
     for candidate in pool:
         if len(winners) >= n:
             break
+
+        # ── Vérif téléphone doublon dans cette session ─────────────────────
+        phone_norm = normalize_phone(candidate.get('phone', ''))
+        if phone_norm and phone_norm in drawn_phones:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                   f" — même téléphone qu'un gagnant déjà tiré → remplacé")
+            continue
+
         try:
             valid, reason = validate_and_register_winner(
                 candidate, nom_jeu, sh, banned_rows, col_inserted,
@@ -399,6 +435,8 @@ def draw_with_checks(participants, n, creds_path, nom_jeu,
             continue
         if valid:
             winners.append(candidate)
+            if phone_norm:
+                drawn_phones.add(phone_norm)
             log_cb(f"✓  {candidate['prenom']} {candidate['nom']} — {reason}")
         else:
             excluded += 1
@@ -2051,7 +2089,7 @@ def get_or_create_dropbox_link(token, api_path):
 
 def extract_sports_winners(all_vals):
     """
-    Extrait les paires (nom, prenom) de tous les tableaux d'un onglet sport.
+    Extrait les triplets (nom, prenom, phone) de tous les tableaux d'un onglet sport.
     Ignore les lignes de titres et d'en-têtes.
     """
     SKIP = {'nom', 'prenom', 'prénom', 'ville', 'email', 'telephone',
@@ -2060,11 +2098,12 @@ def extract_sports_winners(all_vals):
     for row in all_vals:
         nom    = row[0].strip() if len(row) > 0 else ''
         prenom = row[1].strip() if len(row) > 1 else ''
+        phone  = row[4].strip() if len(row) > 4 else ''
         if not nom or not prenom:
             continue
         if normalize(nom) in SKIP or normalize(prenom) in SKIP:
             continue
-        winners.append((nom, prenom))
+        winners.append((nom, prenom, phone))
     return winners
 
 
@@ -2288,11 +2327,12 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
                f" — vérification bannis ignorée.")
 
     # ── Charger l'historique 6 mois depuis « liste des gagnants » ──────────
-    six_months_ago = datetime.now() - timedelta(days=183)
-    hist_rows    = []
-    hist_nom_col = 0
-    hist_prn_col = 1
-    hist_date_cols = []
+    six_months_ago  = datetime.now() - timedelta(days=183)
+    hist_rows       = []
+    hist_nom_col    = 0
+    hist_prn_col    = 1
+    hist_phone_col  = 4
+    hist_date_cols  = []
     use_history = False
     if bypass_6months:
         log_cb("ℹ  Vérification 6 mois désactivée (mode bypass).")
@@ -2301,10 +2341,12 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
             hist_ws   = sh.worksheet("liste des gagnants")
             hist_vals = hist_ws.get_all_values()
             header_row = hist_vals[2] if len(hist_vals) > 2 else []
-            c_nom    = _find_col(header_row, ['nom'])
-            c_prn    = _find_col(header_row, ['prenom', 'prénom'])
-            hist_nom_col = c_nom if c_nom is not None else 0
-            hist_prn_col = c_prn if c_prn is not None else 1
+            c_nom   = _find_col(header_row, ['nom'])
+            c_prn   = _find_col(header_row, ['prenom', 'prénom'])
+            c_phone = _find_col(header_row, ['telephone', 'téléphone', 'tel'])
+            hist_nom_col   = c_nom   if c_nom   is not None else 0
+            hist_prn_col   = c_prn   if c_prn   is not None else 1
+            hist_phone_col = c_phone if c_phone is not None else 4
             hist_date_cols = [i for i in range(5, len(header_row))
                               if header_row[i].strip()]
             hist_rows = [row for i, row in enumerate(hist_vals)
@@ -2317,22 +2359,31 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
 
     pool = [p for p in participants if p['email']]
     random.shuffle(pool)
-    winners    = []
-    drawn_noms = set()   # noms de famille déjà dans ce tirage
-    excluded   = 0
+    winners      = []
+    drawn_noms   = set()   # noms de famille déjà dans ce tirage
+    drawn_phones = set()   # téléphones déjà gagnants dans ce tirage
+    excluded     = 0
 
     for candidate in pool:
         if len(winners) >= n:
             break
-        nom_norm = normalize(candidate['nom'])
-        prn_norm = normalize(candidate['prenom'])
+        nom_norm   = normalize(candidate['nom'])
+        prn_norm   = normalize(candidate['prenom'])
+        phone_norm = normalize_phone(candidate.get('phone', ''))
 
-        # ── Règle 0 : joueur banni ──────────────────────────────────────────
+        # ── Règle 0 : joueur banni (nom/prénom ou téléphone) ────────────────
         is_banned = False
         for brow in banned_rows:
             row_text = normalize(' '.join(brow))
             if nom_norm in row_text and prn_norm in row_text:
                 is_banned = True
+                break
+            if phone_norm:
+                for cell in brow:
+                    if normalize_phone(cell) == phone_norm:
+                        is_banned = True
+                        break
+            if is_banned:
                 break
         if is_banned:
             excluded += 1
@@ -2340,9 +2391,16 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
                    f" — présent dans la liste des bannis → exclu")
             continue
 
-        # ── Règle 1 : déjà gagnant cette saison (nom + prénom) ─────────────
-        if any(normalize(en) == nom_norm and normalize(ep) == prn_norm
-               for en, ep in existing):
+        # ── Règle 1 : déjà gagnant cette saison (nom+prénom ou téléphone) ───
+        season_match = False
+        for en, ep, ephone in existing:
+            if normalize(en) == nom_norm and normalize(ep) == prn_norm:
+                season_match = True
+                break
+            if phone_norm and normalize_phone(ephone) == phone_norm:
+                season_match = True
+                break
+        if season_match:
             excluded += 1
             log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
                    f" — déjà gagnant cette saison → exclu")
@@ -2355,13 +2413,26 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
                    f" — même nom qu'un gagnant déjà tiré → exclu")
             continue
 
-        # ── Règle 3 : a gagné dans les 6 derniers mois ──────────────────────
+        # ── Règle 2b : même téléphone dans CE tirage ────────────────────────
+        if phone_norm and phone_norm in drawn_phones:
+            excluded += 1
+            log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
+                   f" — même téléphone qu'un gagnant déjà tiré → exclu")
+            continue
+
+        # ── Règle 3 : a gagné dans les 6 derniers mois (nom+prénom ou tel) ──
         if use_history:
-            recent_win = None
+            recent_win  = None
+            phone_alias = None
             for row in hist_rows:
-                n_val = row[hist_nom_col].strip() if hist_nom_col < len(row) else ""
-                p_val = row[hist_prn_col].strip() if hist_prn_col < len(row) else ""
-                if normalize(n_val) == nom_norm and normalize(p_val) == prn_norm:
+                n_val = row[hist_nom_col].strip()   if hist_nom_col   < len(row) else ""
+                p_val = row[hist_prn_col].strip()   if hist_prn_col   < len(row) else ""
+                ph_val = row[hist_phone_col].strip() if hist_phone_col < len(row) else ""
+                name_match  = normalize(n_val) == nom_norm and normalize(p_val) == prn_norm
+                phone_match = phone_norm and normalize_phone(ph_val) == phone_norm
+                if name_match or phone_match:
+                    if phone_match and not name_match:
+                        phone_alias = f"{n_val} {p_val}".strip()
                     for dc in hist_date_cols:
                         if dc < len(row) and row[dc].strip():
                             d = parse_date(row[dc])
@@ -2371,13 +2442,16 @@ def sports_draw_with_checks(participants, n, creds_path, ws_name,
                     break
             if recent_win:
                 excluded += 1
+                suffix = f" (connu sous : {phone_alias})" if phone_alias else ""
                 log_cb(f"⚠  {candidate['prenom']} {candidate['nom']}"
                        f" — a gagné le {recent_win.strftime('%d/%m/%Y')}"
-                       f" (moins de 6 mois) → exclu")
+                       f" (moins de 6 mois){suffix} → exclu")
                 continue
 
         winners.append(candidate)
         drawn_noms.add(nom_norm)
+        if phone_norm:
+            drawn_phones.add(phone_norm)
         log_cb(f"✓  {candidate['prenom']} {candidate['nom']}")
 
     if len(winners) < n:
